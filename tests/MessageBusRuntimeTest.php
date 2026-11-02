@@ -65,6 +65,11 @@ final class MessageBusRuntimeTest extends TestCase
         self::assertNotNull($trace->nestedEnvelope);
         self::assertSame('message-1', $trace->rootEnvelope->messageId);
         self::assertSame('message-2', $trace->nestedEnvelope->messageId);
+        self::assertNotNull($trace->rootEnvelope->bindingId);
+        self::assertNotNull($trace->nestedEnvelope->bindingId);
+        self::assertStringStartsWith('auto.', $trace->rootEnvelope->bindingId);
+        self::assertStringStartsWith('auto.', $trace->nestedEnvelope->bindingId);
+        self::assertNotSame($trace->rootEnvelope->bindingId, $trace->nestedEnvelope->bindingId);
         self::assertSame('message-1', $trace->nestedEnvelope->correlationId);
         self::assertSame('message-1', $trace->nestedEnvelope->causationId);
         self::assertSame('header', $trace->nestedEnvelope->headers->get('root'));

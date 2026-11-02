@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Fedor\MessageBus\Tests;
 
+use DateTimeImmutable;
 use Fedor\MessageBus\Attribute\EventSubscriber;
 use Fedor\MessageBus\Attribute\MessageAlias;
 use Fedor\MessageBus\Codec\InvalidMessagePayload;
@@ -44,6 +45,7 @@ final class JsonEnvelopeSerializerTest extends TestCase
             'correlation-1',
             'causation-1',
             new Headers(['trace' => 'trace-1', 'attempt' => 2]),
+            new DateTimeImmutable('2026-11-02T20:00:00+00:00'),
         );
 
         $serialized = $serializer->serialize($envelope);
@@ -51,7 +53,7 @@ final class JsonEnvelopeSerializerTest extends TestCase
         self::assertSame(SerializedEnvelope::SCHEMA_VERSION, $serialized->schemaVersion);
         self::assertSame('address.registered', $serialized->messageName);
         self::assertSame(
-            '{"message":{"alias":"address.registered","version":1,"payload":{"city":"Москва","postalCode":"101000","country":"RU"}},"metadata":{"messageId":"message-1","correlationId":"correlation-1","causationId":"causation-1","headers":{"trace":"trace-1","attempt":2}}}',
+            '{"message":{"alias":"address.registered","version":1,"payload":{"city":"Москва","postalCode":"101000","country":"RU"}},"metadata":{"messageId":"message-1","correlationId":"correlation-1","causationId":"causation-1","createdAt":"2026-11-02T20:00:00+00:00","headers":{"trace":"trace-1","attempt":2}}}',
             $serialized->payload,
         );
 
@@ -61,6 +63,7 @@ final class JsonEnvelopeSerializerTest extends TestCase
         self::assertSame('message-1', $restored->messageId);
         self::assertSame('correlation-1', $restored->correlationId);
         self::assertSame('causation-1', $restored->causationId);
+        self::assertEquals($envelope->createdAt, $restored->createdAt);
         self::assertSame(['trace' => 'trace-1', 'attempt' => 2], $restored->headers->all());
     }
 

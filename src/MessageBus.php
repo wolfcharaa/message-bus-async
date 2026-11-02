@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Fedor\MessageBus;
 
+use Fedor\MessageBus\Clock\SystemClock;
 use Fedor\MessageBus\Context\MessageContextFactoryInterface;
 use Fedor\MessageBus\Context\MessageContextInterface;
 use Fedor\MessageBus\Context\NestedMessageBus;
@@ -63,7 +64,10 @@ final class MessageBus implements MessageBusInterface
         private readonly ?RetryPolicyRegistryInterface $retryPolicyRegistry = null,
     ) {
         $this->scopeRunner = new ServiceScopeRunner($scopeFactory);
-        $this->envelopeFactory = $envelopeFactory ?? new EnvelopeFactory(new RandomMessageIdGenerator());
+        $this->envelopeFactory = $envelopeFactory ?? new EnvelopeFactory(
+            new RandomMessageIdGenerator(),
+            $clock ?? new SystemClock(),
+        );
         $this->invoker = $invoker ?? new ReflectionCallableInvoker();
     }
 
@@ -197,7 +201,23 @@ final class MessageBus implements MessageBusInterface
             if ($this->canExecuteDirectly($flow, $flowBindings)) {
                 $flowResult = $this->executeDirectly($flowBindings, $envelope, $options, $scope);
             } else {
-                $context = $this->createContext($flow, $envelope, $options, $scope);
+                /** @var array<string, MessageContextInterface> $contexts */
+                $contexts = [];
+                $contextForBinding = function (HandlerBinding $binding) use (
+                    &$contexts,
+                    $flow,
+                    $envelope,
+                    $options,
+                    $scope,
+                ): MessageContextInterface {
+                    return $contexts[$binding->id] ??= $this->createContext(
+                        $flow,
+                        $envelope->forBinding($binding->id),
+                        $options,
+                        $scope,
+                    );
+                };
+                $context = $contextForBinding($flowBindings[0]);
                 $strategy = $this->strategy($flow->strategy, $scope);
                 $flowResult = $strategy->execute(new ExecutionRequest(
                     $flowBindings,
@@ -205,6 +225,7 @@ final class MessageBus implements MessageBusInterface
                     $flow,
                     $options,
                     $this->environment($scope),
+                    $contextForBinding,
                 ));
             }
 

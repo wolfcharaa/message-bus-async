@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Fedor\MessageBus\Envelope;
 
+use DateTimeImmutable;
 use Fedor\MessageBus\Codec\JsonValue;
 use Fedor\MessageBus\Codec\MessageCodecRegistry;
 use JsonException;
@@ -27,6 +28,7 @@ final readonly class JsonEnvelopeSerializer implements EnvelopeSerializerInterfa
                 'messageId' => $envelope->messageId,
                 'correlationId' => $envelope->correlationId,
                 'causationId' => $envelope->causationId,
+                'createdAt' => $envelope->createdAt->format(DATE_ATOM),
                 'headers' => $envelope->headers->all(),
             ],
         ];
@@ -86,11 +88,13 @@ final readonly class JsonEnvelopeSerializer implements EnvelopeSerializerInterfa
         $messageId = $metadata['messageId'] ?? null;
         $correlationId = $metadata['correlationId'] ?? null;
         $causationId = $metadata['causationId'] ?? null;
+        $createdAt = $metadata['createdAt'] ?? null;
         $headers = $metadata['headers'] ?? null;
         if (
             !is_string($messageId)
             || !is_string($correlationId)
             || ($causationId !== null && !is_string($causationId))
+            || ($createdAt !== null && !is_string($createdAt))
             || !is_array($headers)
             || array_is_list($headers) && $headers !== []
         ) {
@@ -104,6 +108,7 @@ final readonly class JsonEnvelopeSerializer implements EnvelopeSerializerInterfa
                 $correlationId,
                 $causationId,
                 new Headers($headers),
+                $createdAt !== null ? new DateTimeImmutable($createdAt) : null,
             );
         } catch (InvalidSerializedEnvelope $exception) {
             throw $exception;

@@ -9,11 +9,14 @@ use Fedor\MessageBus\Identity\MessageIdGeneratorInterface;
 use Fedor\MessageBus\Message\Command;
 use Fedor\MessageBus\Message\Event;
 use Fedor\MessageBus\Message\Query;
+use Psr\Clock\ClockInterface;
 
 final readonly class EnvelopeFactory
 {
-    public function __construct(private MessageIdGeneratorInterface $messageIdGenerator)
-    {
+    public function __construct(
+        private MessageIdGeneratorInterface $messageIdGenerator,
+        private ?ClockInterface $clock = null,
+    ) {
     }
 
     /** @param Query<mixed>|Command|Event $message */
@@ -30,6 +33,7 @@ final readonly class EnvelopeFactory
             correlationId: $options->correlationId ?? $messageId,
             causationId: null,
             headers: $options->headers,
+            createdAt: $this->clock?->now(),
         );
     }
 
@@ -47,6 +51,7 @@ final readonly class EnvelopeFactory
             correlationId: $parent->correlationId,
             causationId: $parent->messageId,
             headers: $parent->headers->merge($options->headers),
+            createdAt: $this->clock?->now(),
         );
     }
 }
