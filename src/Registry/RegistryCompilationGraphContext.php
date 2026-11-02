@@ -9,7 +9,7 @@ use Fedor\MessageBus\Flow\FlowRegistry;
 final readonly class RegistryCompilationGraphContext
 {
     /**
-     * @param list<HandlerBinding> $bindings
+     * @param list<HandlerBindingDefinition> $bindings
      * @param array<string, class-string> $aliases
      * @param array<class-string, string> $messageNames
      */

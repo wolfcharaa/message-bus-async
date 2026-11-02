@@ -61,29 +61,15 @@ final class MessageRegistryCompiler
 
         $compiled = $this->compiler->compileWithDiagnostics($classes, $flows);
         $diagnostics = array_map($this->translateDiagnostic(...), $compiled->diagnostics);
+        $graphContext = $compiled->graphContext;
 
         if ($compiled->registry === null || $this->hasErrorDiagnostics($diagnostics)) {
-            return new RegistryCompilationResult(
-                null,
-                $diagnostics,
-                new RegistryCompilationGraphContext(
-                    $this->failureStage($compiled->diagnostics),
-                    flows: $flows,
-                ),
-            );
+            return new RegistryCompilationResult(null, $diagnostics, $graphContext);
         }
 
-        $registry = $compiled->registry;
-        $bindings = $registry->bindings();
-        $aliases = $registry->aliases();
-        $messageNames = $this->messageNames($aliases);
-        $graphContext = new RegistryCompilationGraphContext(
-            RegistryCompilationStage::CoreValidated,
-            $bindings,
-            $aliases,
-            $messageNames,
-            $flows,
-        );
+        $bindings = $graphContext->bindings;
+        $aliases = $graphContext->aliases;
+        $messageNames = $graphContext->messageNames;
 
         foreach ($this->validationRules as $rule) {
             if (!$rule instanceof RegistryValidationRuleInterface) {
@@ -118,7 +104,7 @@ final class MessageRegistryCompiler
             return new RegistryCompilationResult(null, $diagnostics, $graphContext);
         }
 
-        $definition = $this->definition($registry, $libraryVersion, $sourceHash);
+        $definition = $this->definition($graphContext, $libraryVersion, $sourceHash);
 
         return new RegistryCompilationResult(
             $definition,
@@ -189,51 +175,20 @@ final class MessageRegistryCompiler
         };
     }
 
-    /** @param list<InternalRegistryDiagnostic> $diagnostics */
-    private function failureStage(array $diagnostics): RegistryCompilationStage
-    {
-        foreach ($diagnostics as $diagnostic) {
-            if (in_array($diagnostic->code, [
-                InternalRegistryDiagnosticCode::ClassMissing,
-                InternalRegistryDiagnosticCode::ClassDuplicate,
-                InternalRegistryDiagnosticCode::MessageAliasInvalidTarget,
-                InternalRegistryDiagnosticCode::MessageAliasMultiple,
-                InternalRegistryDiagnosticCode::MessageAliasEmpty,
-                InternalRegistryDiagnosticCode::MessageAliasDuplicate,
-                InternalRegistryDiagnosticCode::HandlerClassNotInstantiable,
-                InternalRegistryDiagnosticCode::HandlerAttributeInvalid,
-                InternalRegistryDiagnosticCode::HandlerAttributeUnsupported,
-            ], true)) {
-                return RegistryCompilationStage::HandlersDiscovered;
-            }
-        }
-
-        foreach ($diagnostics as $diagnostic) {
-            if (in_array($diagnostic->code, [
-                InternalRegistryDiagnosticCode::BindingIdMissing,
-                InternalRegistryDiagnosticCode::FlowMissing,
-                InternalRegistryDiagnosticCode::MessageAliasRequired,
-                InternalRegistryDiagnosticCode::QueryHandlerCount,
-                InternalRegistryDiagnosticCode::CommandPrimaryMissing,
-                InternalRegistryDiagnosticCode::CommandPrimaryDuplicate,
-            ], true)) {
-                return RegistryCompilationStage::BindingsNormalized;
-            }
-        }
-
-        return RegistryCompilationStage::CoreValidated;
-    }
-
     private function definition(
-        CompiledRegistry $registry,
+        RegistryCompilationGraphContext $graphContext,
         string $libraryVersion,
         string $sourceHash,
     ): MessageRegistryDefinition {
         $messages = [];
         $bindings = [];
-        foreach ($registry->bindings() as $binding) {
-            $messages[$binding->message][] = $binding->id;
-            $bindings[$binding->id] = $binding;
+        foreach ($graphContext->bindings as $binding) {
+            if ($binding->bindingId === null) {
+                throw new RegistryCompilationException('Normalized binding has no binding ID.');
+            }
+
+            $messages[$binding->message][] = $binding->bindingId;
+            $bindings[$binding->bindingId] = $binding;
         }
 
         ksort($messages, SORT_STRING);
@@ -243,34 +198,19 @@ final class MessageRegistryCompiler
         unset($bindingIds);
         ksort($bindings, SORT_STRING);
 
-        $aliases = $registry->aliases();
+        $flows = $graphContext->flows ?? new FlowRegistry();
 
         return new MessageRegistryDefinition(
             self::SCHEMA_VERSION,
             $libraryVersion,
             (new DateTimeImmutable())->format(DATE_ATOM),
             $sourceHash,
-            $registry->flows,
+            $flows,
             $messages,
             $bindings,
-            $aliases,
-            $this->messageNames($aliases),
+            $graphContext->aliases,
+            $graphContext->messageNames,
         );
-    }
-
-    /**
-     * @param array<string, class-string> $aliases
-     * @return array<class-string, string>
-     */
-    private function messageNames(array $aliases): array
-    {
-        $messageNames = [];
-        foreach ($aliases as $alias => $message) {
-            $messageNames[$message] = $alias;
-        }
-        ksort($messageNames, SORT_STRING);
-
-        return $messageNames;
     }
 
     /** @param list<RegistryDiagnostic> $diagnostics */

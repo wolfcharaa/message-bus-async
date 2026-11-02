@@ -18,8 +18,11 @@ use Fedor\MessageBus\Message\Event;
 use Fedor\MessageBus\Message\Query;
 use Fedor\MessageBus\Registry\CompiledRegistry;
 use Fedor\MessageBus\Registry\HandlerBinding;
+use Fedor\MessageBus\Registry\HandlerBindingDefinition;
 use Fedor\MessageBus\Registry\HandlerInvocationMode;
 use Fedor\MessageBus\Registry\HandlerKind;
+use Fedor\MessageBus\Registry\RegistryCompilationGraphContext;
+use Fedor\MessageBus\Registry\RegistryCompilationStage;
 use ReflectionAttribute;
 use ReflectionClass;
 use ReflectionIntersectionType;
@@ -47,24 +50,72 @@ final class RegistryCompiler
         $flows ??= new FlowRegistry();
         $diagnostics = [];
         $reflections = $this->reflectClasses($classes, $diagnostics);
-        [$messageKinds, $aliases] = $this->discoverMessages($reflections, $diagnostics);
-        $this->validateFlows($flows, $diagnostics);
-        $pendingBindings = $this->discoverBindings($reflections, $messageKinds, $flows, $aliases, $diagnostics);
-        $primaryBindings = $this->validateCardinality($pendingBindings, $flows, $diagnostics);
-
-        $this->sortDiagnostics($diagnostics);
+        [, $aliases] = $this->discoverMessages($reflections, $diagnostics);
+        $bindings = $this->discoverBindings($reflections, $diagnostics);
+        $messageNames = $this->messageNames($aliases);
+        $graphContext = $this->graphContext(
+            RegistryCompilationStage::HandlersDiscovered,
+            $bindings,
+            $aliases,
+            $messageNames,
+            $flows,
+        );
         if ($this->hasErrors($diagnostics)) {
-            return new RegistryCompilationResult(null, $diagnostics);
+            return $this->result(null, $diagnostics, $graphContext);
         }
 
-        $bindings = array_map(
-            static fn (PendingBinding $binding): HandlerBinding => $binding->compile(
-                $primaryBindings[$binding->id] ?? false,
-            ),
-            $pendingBindings,
+        [$aliases, $messageNames] = $this->hydrateMessageAliases(
+            $bindings,
+            $aliases,
+            $messageNames,
+            $diagnostics,
+        );
+        $graphContext = $this->graphContext(
+            RegistryCompilationStage::AliasesHydrated,
+            $bindings,
+            $aliases,
+            $messageNames,
+            $flows,
+        );
+        if ($this->hasErrors($diagnostics)) {
+            return $this->result(null, $diagnostics, $graphContext);
+        }
+
+        $bindings = $this->normalizeBindings($bindings, $flows, $messageNames, $diagnostics);
+        $graphContext = $this->graphContext(
+            RegistryCompilationStage::BindingsNormalized,
+            $bindings,
+            $aliases,
+            $messageNames,
+            $flows,
+        );
+        if ($this->hasErrors($diagnostics)) {
+            return $this->result(null, $diagnostics, $graphContext);
+        }
+
+        $this->validateFlows($flows, $diagnostics);
+        $this->validateBindings($bindings, $flows, $diagnostics);
+        $graphContext = $this->graphContext(
+            RegistryCompilationStage::CoreValidated,
+            $bindings,
+            $aliases,
+            $messageNames,
+            $flows,
+        );
+        if ($this->hasErrors($diagnostics)) {
+            return $this->result(null, $diagnostics, $graphContext);
+        }
+
+        $compiledBindings = array_map(
+            static fn (HandlerBindingDefinition $binding): HandlerBinding => $binding->compile(),
+            $bindings,
         );
 
-        return new RegistryCompilationResult(new CompiledRegistry($bindings, $aliases, $flows), $diagnostics);
+        return $this->result(
+            new CompiledRegistry($compiledBindings, $aliases, $flows),
+            $diagnostics,
+            $graphContext,
+        );
     }
 
     /**
@@ -219,20 +270,14 @@ final class RegistryCompiler
 
     /**
      * @param array<class-string, ReflectionClass<object>> $reflections
-     * @param array<class-string, HandlerKind> $messageKinds
-     * @param array<string, class-string> $aliases
      * @param list<RegistryDiagnostic> $diagnostics
-     * @return list<PendingBinding>
+     * @return list<HandlerBindingDefinition>
      */
     private function discoverBindings(
         array $reflections,
-        array &$messageKinds,
-        FlowRegistry $flows,
-        array &$aliases,
         array &$diagnostics,
     ): array {
         $bindings = [];
-        $bindingOwners = [];
 
         foreach ($reflections as $handlerClass => $reflection) {
             $attributes = $reflection->getAttributes(
@@ -254,8 +299,6 @@ final class RegistryCompiler
             }
 
             foreach ($attributes as $reflectionAttribute) {
-                $before = count($diagnostics);
-
                 try {
                     /** @var MessageHandlerAttributeInterface $attribute */
                     $attribute = $reflectionAttribute->newInstance();
@@ -273,147 +316,34 @@ final class RegistryCompiler
                     }
 
                     $flowKey = trim($attribute->flow());
-                    $flow = $flows->all()[$flowKey] ?? null;
-                    if ($flow === null) {
-                        $diagnostics[] = $this->errorForClass(
-                            RegistryDiagnosticCode::FlowMissing,
-                            sprintf('Message flow "%s" is not registered.', $flowKey),
-                            $reflection,
-                            $reflectionAttribute->getName(),
-                            suggestion: 'Register the flow or update the handler attribute.',
-                        );
-                    }
-
                     $declaredBindingId = $attribute->bindingId();
                     $bindingId = $declaredBindingId === null || trim($declaredBindingId) === ''
                         ? null
                         : $declaredBindingId;
-                    if ($flow?->isAsync() === true && $bindingId === null) {
-                        $diagnostics[] = $this->errorForClass(
-                            RegistryDiagnosticCode::BindingIdMissing,
-                            sprintf('Async binding on "%s" must declare a stable bindingId.', $handlerClass),
-                            $reflection,
-                            $reflectionAttribute->getName(),
-                            suggestion: 'Set bindingId explicitly on the async handler attribute.',
-                        );
-                    }
-
                     $message = $attribute->message();
-                    if (!class_exists($message)) {
-                        $diagnostics[] = $this->errorForClass(
-                            RegistryDiagnosticCode::BindingMessageMissing,
-                            sprintf('Binding message class "%s" does not exist.', $message),
-                            $reflection,
-                            $reflectionAttribute->getName(),
-                            bindingId: $bindingId,
-                            suggestion: 'Reference an autoloadable message class.',
-                        );
-                    } else {
-                        /** @var class-string $message */
-                        $messageKind = $this->messageKind($message, $diagnostics);
-                        if ($messageKind !== null) {
-                            $messageKinds[$message] = $messageKind;
-                            if ($messageKind !== $kind) {
-                                $diagnostics[] = $this->errorForClass(
-                                    RegistryDiagnosticCode::BindingMessageKindMismatch,
-                                    sprintf('Binding kind "%s" does not match message "%s".', $kind->value, $message),
-                                    $reflection,
-                                    $reflectionAttribute->getName(),
-                                    bindingId: $bindingId,
-                                    suggestion: 'Use the handler attribute matching the message marker.',
-                                );
-                            }
-                        }
-
-                        $alias = $this->hydrateMessageAlias($message, $aliases, $diagnostics);
-                        if ($flow?->isAsync() === true && $alias === null) {
-                            $diagnostics[] = $this->errorForClass(
-                                RegistryDiagnosticCode::MessageAliasRequired,
-                                sprintf('Async message "%s" must declare MessageAlias.', $message),
-                                $reflection,
-                                $reflectionAttribute->getName(),
-                                bindingId: $bindingId,
-                                suggestion: 'Add a stable MessageAlias to every durable message.',
-                            );
-                        }
-                    }
-
-                    if ($flow?->isAsync() === true && $kind === HandlerKind::Query) {
-                        $diagnostics[] = $this->errorForClass(
-                            RegistryDiagnosticCode::QueryAsyncFlow,
-                            sprintf('Query "%s" must be bound to a sync flow.', $message),
-                            $reflection,
-                            $reflectionAttribute->getName(),
-                            bindingId: $bindingId,
-                            suggestion: 'Use a command or event for asynchronous work.',
-                        );
-                    }
-
-                    $resolvedBindingId = $bindingId ?? $this->autoBindingId(
-                        $kind,
+                    /** @var class-string $message */
+                    /** @var list<class-string<InterceptorInterface>> $middleware */
+                    $middleware = $attribute->middleware();
+                    $delivery = match (true) {
+                        $attribute instanceof CommandHandler => $attribute->delivery(),
+                        $attribute instanceof EventSubscriber => $attribute->delivery(),
+                        default => null,
+                    };
+                    $bindings[] = new HandlerBindingDefinition(
+                        $bindingId,
                         $message,
                         $handlerClass,
                         $attribute->method(),
                         $flowKey,
-                    );
-                    if (isset($bindingOwners[$resolvedBindingId])) {
-                        $diagnostics[] = $this->errorForClass(
-                            RegistryDiagnosticCode::BindingIdDuplicate,
-                            sprintf(
-                                'Binding ID "%s" is used by both "%s" and "%s".',
-                                $resolvedBindingId,
-                                $bindingOwners[$resolvedBindingId],
-                                $handlerClass,
-                            ),
-                            $reflection,
-                            $reflectionAttribute->getName(),
-                            bindingId: $resolvedBindingId,
-                            suggestion: 'Assign a unique stable ID to every handler binding.',
-                        );
-                    } else {
-                        $bindingOwners[$resolvedBindingId] = $handlerClass;
-                    }
-
-                    $this->validateHandlerSignature(
-                        $reflection,
-                        $attribute,
                         $kind,
-                        $resolvedBindingId,
-                        $diagnostics,
+                        $attribute instanceof CommandHandler ? $attribute->primary : null,
+                        $attribute->priority(),
+                        $middleware,
+                        $delivery,
+                        $attribute->contextAware()
+                            ? HandlerInvocationMode::ContextAware
+                            : HandlerInvocationMode::Contextless,
                     );
-                    $this->validateInterceptors(
-                        $reflection,
-                        $reflectionAttribute->getName(),
-                        $attribute->middleware(),
-                        $resolvedBindingId,
-                        $diagnostics,
-                    );
-
-                    if ($instantiable && $flow !== null && count($diagnostics) === $before) {
-                        /** @var class-string $message */
-                        /** @var list<class-string<InterceptorInterface>> $middleware */
-                        $middleware = $attribute->middleware();
-                        $delivery = match (true) {
-                            $attribute instanceof CommandHandler => $attribute->delivery(),
-                            $attribute instanceof EventSubscriber => $attribute->delivery(),
-                            default => null,
-                        };
-                        $bindings[] = new PendingBinding(
-                            $resolvedBindingId,
-                            $message,
-                            $kind,
-                            $handlerClass,
-                            $attribute->method(),
-                            $flowKey,
-                            $attribute->priority(),
-                            $attribute instanceof CommandHandler ? $attribute->primary : null,
-                            $attribute->contextAware()
-                                ? HandlerInvocationMode::ContextAware
-                                : HandlerInvocationMode::Contextless,
-                            $middleware,
-                            $delivery,
-                        );
-                    }
                 } catch (Throwable $exception) {
                     $diagnostics[] = $this->errorForClass(
                         RegistryDiagnosticCode::HandlerAttributeInvalid,
@@ -435,23 +365,222 @@ final class RegistryCompiler
     }
 
     /**
-     * @param ReflectionClass<object> $handler
+     * @param list<HandlerBindingDefinition> $bindings
+     * @param array<string, class-string> $aliases
+     * @param array<class-string, string> $messageNames
+     * @param list<RegistryDiagnostic> $diagnostics
+     * @return array{array<string, class-string>, array<class-string, string>}
+     */
+    private function hydrateMessageAliases(
+        array $bindings,
+        array $aliases,
+        array $messageNames,
+        array &$diagnostics,
+    ): array {
+        foreach ($bindings as $binding) {
+            if (!class_exists($binding->message)) {
+                continue;
+            }
+
+            $this->hydrateMessageAlias($binding->message, $aliases, $diagnostics);
+        }
+
+        return [$aliases, $this->messageNames($aliases) + $messageNames];
+    }
+
+    /**
+     * @param list<HandlerBindingDefinition> $bindings
+     * @param array<class-string, string> $messageNames
+     * @param list<RegistryDiagnostic> $diagnostics
+     * @return list<HandlerBindingDefinition>
+     */
+    private function normalizeBindings(
+        array $bindings,
+        FlowRegistry $flows,
+        array $messageNames,
+        array &$diagnostics,
+    ): array {
+        $normalized = [];
+
+        foreach ($bindings as $binding) {
+            $flow = $flows->all()[$binding->flow] ?? null;
+            if ($flow === null) {
+                $diagnostics[] = $this->error(
+                    RegistryDiagnosticCode::FlowMissing,
+                    sprintf('Message flow "%s" is not registered.', $binding->flow),
+                    sourceClass: $binding->action,
+                    bindingId: $binding->bindingId,
+                    suggestion: 'Register the flow or update the handler attribute.',
+                );
+
+                continue;
+            }
+
+            if ($flow->isAsync() && $binding->bindingId === null) {
+                $diagnostics[] = $this->error(
+                    RegistryDiagnosticCode::BindingIdMissing,
+                    sprintf('Async binding on "%s" must declare a stable bindingId.', $binding->action),
+                    sourceClass: $binding->action,
+                    suggestion: 'Set bindingId explicitly on the async handler attribute.',
+                );
+
+                continue;
+            }
+
+            if ($binding->bindingId === null) {
+                $binding = $binding->withBindingId($this->autoBindingId(
+                    $binding->kind,
+                    $binding->message,
+                    $binding->action,
+                    $binding->method,
+                    $binding->flow,
+                ));
+            }
+
+            if ($flow->isAsync() && !isset($messageNames[$binding->message])) {
+                $diagnostics[] = $this->error(
+                    RegistryDiagnosticCode::MessageAliasRequired,
+                    sprintf('Async message "%s" must declare MessageAlias.', $binding->message),
+                    sourceClass: $binding->action,
+                    bindingId: $binding->bindingId,
+                    suggestion: 'Add a stable MessageAlias to every durable message.',
+                );
+
+                continue;
+            }
+
+            $normalized[] = $binding;
+        }
+
+        $primaryBindings = $this->validateCardinality($normalized, $flows, $diagnostics);
+
+        return array_map(
+            static fn (HandlerBindingDefinition $binding): HandlerBindingDefinition => $binding->withPrimary(
+                $primaryBindings[$binding->bindingId ?? ''] ?? false,
+            ),
+            $normalized,
+        );
+    }
+
+    /**
+     * @param list<HandlerBindingDefinition> $bindings
+     * @param list<RegistryDiagnostic> $diagnostics
+     */
+    private function validateBindings(array $bindings, FlowRegistry $flows, array &$diagnostics): void
+    {
+        $bindingOwners = [];
+
+        foreach ($bindings as $binding) {
+            if ($binding->bindingId === null) {
+                $diagnostics[] = $this->error(
+                    RegistryDiagnosticCode::BindingIdMissing,
+                    'Binding ID was not normalized.',
+                    sourceClass: $binding->action,
+                    suggestion: 'Report this as a compiler normalization bug.',
+                );
+
+                continue;
+            }
+
+            if (isset($bindingOwners[$binding->bindingId])) {
+                $diagnostics[] = $this->error(
+                    RegistryDiagnosticCode::BindingIdDuplicate,
+                    sprintf(
+                        'Binding ID "%s" is used by both "%s" and "%s".',
+                        $binding->bindingId,
+                        $bindingOwners[$binding->bindingId],
+                        $binding->action,
+                    ),
+                    sourceClass: $binding->action,
+                    bindingId: $binding->bindingId,
+                    suggestion: 'Assign a unique stable ID to every handler binding.',
+                );
+            } else {
+                $bindingOwners[$binding->bindingId] = $binding->action;
+            }
+
+            $flow = $flows->all()[$binding->flow] ?? null;
+            if ($flow === null) {
+                $diagnostics[] = $this->error(
+                    RegistryDiagnosticCode::FlowMissing,
+                    sprintf('Message flow "%s" is not registered.', $binding->flow),
+                    sourceClass: $binding->action,
+                    bindingId: $binding->bindingId,
+                    suggestion: 'Register the flow or update the handler attribute.',
+                );
+
+                continue;
+            }
+
+            if (!class_exists($binding->message)) {
+                $diagnostics[] = $this->error(
+                    RegistryDiagnosticCode::BindingMessageMissing,
+                    sprintf('Binding message class "%s" does not exist.', $binding->message),
+                    sourceClass: $binding->action,
+                    bindingId: $binding->bindingId,
+                    suggestion: 'Reference an autoloadable message class.',
+                );
+
+                continue;
+            }
+
+            $messageKind = $this->messageKind($binding->message, $diagnostics);
+            if ($messageKind !== null && $messageKind !== $binding->kind) {
+                $diagnostics[] = $this->error(
+                    RegistryDiagnosticCode::BindingMessageKindMismatch,
+                    sprintf(
+                        'Binding kind "%s" does not match message "%s".',
+                        $binding->kind->value,
+                        $binding->message,
+                    ),
+                    sourceClass: $binding->action,
+                    bindingId: $binding->bindingId,
+                    suggestion: 'Use the handler attribute matching the message marker.',
+                );
+            }
+
+            if ($flow->isAsync() && $binding->kind === HandlerKind::Query) {
+                $diagnostics[] = $this->error(
+                    RegistryDiagnosticCode::QueryAsyncFlow,
+                    sprintf('Query "%s" must be bound to a sync flow.', $binding->message),
+                    sourceClass: $binding->action,
+                    bindingId: $binding->bindingId,
+                    suggestion: 'Use a command or event for asynchronous work.',
+                );
+            }
+
+            $this->validateHandlerSignature($binding, $diagnostics);
+            $this->validateInterceptors($binding, $diagnostics);
+        }
+    }
+
+    /**
      * @param list<RegistryDiagnostic> $diagnostics
      */
     private function validateHandlerSignature(
-        ReflectionClass $handler,
-        MessageHandlerAttributeInterface $attribute,
-        HandlerKind $kind,
-        ?string $bindingId,
+        HandlerBindingDefinition $binding,
         array &$diagnostics,
     ): void {
-        $methodName = trim($attribute->method());
+        if (!class_exists($binding->action)) {
+            $diagnostics[] = $this->error(
+                RegistryDiagnosticCode::HandlerClassNotInstantiable,
+                sprintf('Handler class "%s" does not exist.', $binding->action),
+                sourceClass: $binding->action,
+                bindingId: $binding->bindingId,
+                suggestion: 'Reference an autoloadable handler class.',
+            );
+
+            return;
+        }
+
+        $handler = new ReflectionClass($binding->action);
+        $methodName = trim($binding->method);
         if ($methodName === '' || !$handler->hasMethod($methodName)) {
             $diagnostics[] = $this->errorForClass(
                 RegistryDiagnosticCode::HandlerMethodMissing,
                 sprintf('Handler method "%s::%s" does not exist.', $handler->getName(), $methodName),
                 $handler,
-                bindingId: $bindingId,
+                bindingId: $binding->bindingId,
                 suggestion: 'Declare the configured method or update the handler attribute.',
             );
 
@@ -464,13 +593,14 @@ final class RegistryCompiler
                 RegistryDiagnosticCode::HandlerMethodNotCallable,
                 sprintf('Handler method "%s::%s" must be public and non-static.', $handler->getName(), $methodName),
                 $method,
-                bindingId: $bindingId,
+                bindingId: $binding->bindingId,
                 suggestion: 'Expose a public instance handler method.',
             );
         }
 
         $parameters = $method->getParameters();
-        $expectedCount = $attribute->contextAware() ? 2 : 1;
+        $contextAware = $binding->invocationMode === HandlerInvocationMode::ContextAware;
+        $expectedCount = $contextAware ? 2 : 1;
         if (count($parameters) !== $expectedCount) {
             $diagnostics[] = $this->errorForMethod(
                 RegistryDiagnosticCode::HandlerSignatureInvalid,
@@ -482,26 +612,26 @@ final class RegistryCompiler
                     count($parameters),
                 ),
                 $method,
-                bindingId: $bindingId,
-                suggestion: $attribute->contextAware()
+                bindingId: $binding->bindingId,
+                suggestion: $contextAware
                     ? 'Use (Message $message, MessageContextInterface $context).'
                     : 'Use (Message $message) or enable contextAware.',
             );
         }
 
-        $message = $attribute->message();
+        $message = $binding->message;
         if (isset($parameters[0]) && !$this->parameterAccepts($parameters[0]->getType(), $message)) {
             $diagnostics[] = $this->errorForMethod(
                 RegistryDiagnosticCode::HandlerSignatureInvalid,
                 sprintf('First argument of "%s::%s" must accept "%s".', $handler->getName(), $methodName, $message),
                 $method,
-                bindingId: $bindingId,
+                bindingId: $binding->bindingId,
                 suggestion: 'Type the first argument with the declared message class or its interface.',
             );
         }
 
         if (
-            $attribute->contextAware()
+            $contextAware
             && isset($parameters[1])
             && !$this->parameterAccepts($parameters[1]->getType(), MessageContextInterface::class)
         ) {
@@ -514,34 +644,34 @@ final class RegistryCompiler
                     MessageContextInterface::class,
                 ),
                 $method,
-                bindingId: $bindingId,
+                bindingId: $binding->bindingId,
                 suggestion: 'Type the second argument with MessageContextInterface.',
             );
         }
 
         $returnType = $method->getReturnType();
-        if ($kind === HandlerKind::Query && ($returnType === null || $this->isVoidLike($returnType))) {
+        if ($binding->kind === HandlerKind::Query && ($returnType === null || $this->isVoidLike($returnType))) {
             $diagnostics[] = $this->errorForMethod(
                 RegistryDiagnosticCode::HandlerSignatureInvalid,
                 sprintf('Query handler "%s::%s" must declare a non-void return type.', $handler->getName(), $methodName),
                 $method,
-                bindingId: $bindingId,
+                bindingId: $binding->bindingId,
                 suggestion: 'Declare the query result type explicitly.',
             );
         }
 
-        if ($kind === HandlerKind::Command && !$this->isNamedType($returnType, 'void')) {
+        if ($binding->kind === HandlerKind::Command && !$this->isNamedType($returnType, 'void')) {
             $diagnostics[] = $this->errorForMethod(
                 RegistryDiagnosticCode::HandlerSignatureInvalid,
                 sprintf('Command handler "%s::%s" must return void.', $handler->getName(), $methodName),
                 $method,
-                bindingId: $bindingId,
+                bindingId: $binding->bindingId,
                 suggestion: 'Use QueryHandler when the caller needs a result.',
             );
         }
 
         if (
-            $kind === HandlerKind::Event
+            $binding->kind === HandlerKind::Event
             && !$this->isNamedType($returnType, 'void')
             && !$this->isNamedType($returnType, 'null')
         ) {
@@ -549,32 +679,27 @@ final class RegistryCompiler
                 RegistryDiagnosticCode::HandlerSignatureInvalid,
                 sprintf('Event subscriber "%s::%s" must return void or null.', $handler->getName(), $methodName),
                 $method,
-                bindingId: $bindingId,
+                bindingId: $binding->bindingId,
                 suggestion: 'Event subscribers must not return business results.',
             );
         }
     }
 
     /**
-     * @param ReflectionClass<object> $handler
-     * @param list<class-string<InterceptorInterface>> $interceptors
      * @param list<RegistryDiagnostic> $diagnostics
      */
     private function validateInterceptors(
-        ReflectionClass $handler,
-        string $attribute,
-        array $interceptors,
-        ?string $bindingId,
+        HandlerBindingDefinition $binding,
         array &$diagnostics,
     ): void {
-        foreach ($interceptors as $interceptor) {
+        $handler = new ReflectionClass($binding->action);
+        foreach ($binding->middleware as $interceptor) {
             if (!class_exists($interceptor)) {
                 $diagnostics[] = $this->errorForClass(
                     RegistryDiagnosticCode::InterceptorMissing,
                     sprintf('Interceptor class "%s" does not exist.', $interceptor),
                     $handler,
-                    $attribute,
-                    bindingId: $bindingId,
+                    bindingId: $binding->bindingId,
                     suggestion: 'Reference an autoloadable interceptor class.',
                 );
 
@@ -582,13 +707,12 @@ final class RegistryCompiler
             }
 
             $reflection = new ReflectionClass($interceptor);
-            if (!$reflection->isInstantiable()) {
+            if (!$reflection->isInstantiable() || !is_a($interceptor, InterceptorInterface::class, true)) {
                 $diagnostics[] = $this->errorForClass(
                     RegistryDiagnosticCode::InterceptorInvalid,
                     sprintf('Interceptor "%s" must be an instantiable %s.', $interceptor, InterceptorInterface::class),
                     $handler,
-                    $attribute,
-                    bindingId: $bindingId,
+                    bindingId: $binding->bindingId,
                     suggestion: 'Use a concrete class implementing InterceptorInterface.',
                 );
             }
@@ -596,7 +720,7 @@ final class RegistryCompiler
     }
 
     /**
-     * @param list<PendingBinding> $bindings
+     * @param list<HandlerBindingDefinition> $bindings
      * @param list<RegistryDiagnostic> $diagnostics
      * @return array<string, bool>
      */
@@ -617,21 +741,23 @@ final class RegistryCompiler
                 $diagnostics[] = $this->error(
                     RegistryDiagnosticCode::QueryHandlerCount,
                     sprintf('Query "%s" must have exactly one handler; %d found.', $message, count($messageBindings)),
-                    sourceClass: $messageBindings[0]->handler,
-                    bindingId: $messageBindings[0]->id,
+                    sourceClass: $messageBindings[0]->action,
+                    bindingId: $messageBindings[0]->bindingId,
                     suggestion: 'Keep query dispatch single-handler.',
                 );
             }
 
             foreach ($messageBindings as $binding) {
-                $primaryBindings[$binding->id] = true;
+                if ($binding->bindingId !== null) {
+                    $primaryBindings[$binding->bindingId] = true;
+                }
             }
         }
 
         foreach ($groups[HandlerKind::Command->value] ?? [] as $message => $messageBindings) {
             $syncBindings = array_values(array_filter(
                 $messageBindings,
-                static fn (PendingBinding $binding): bool => $flows->get($binding->flow)->isSync(),
+                static fn (HandlerBindingDefinition $binding): bool => ($flows->all()[$binding->flow] ?? null)?->isSync() ?? false,
             ));
             if ($syncBindings === []) {
                 continue;
@@ -639,11 +765,13 @@ final class RegistryCompiler
 
             $explicitPrimary = array_values(array_filter(
                 $syncBindings,
-                static fn (PendingBinding $binding): bool => $binding->primary === true,
+                static fn (HandlerBindingDefinition $binding): bool => $binding->primary === true,
             ));
 
             if (count($syncBindings) === 1 && $syncBindings[0]->primary === null) {
-                $primaryBindings[$syncBindings[0]->id] = true;
+                if ($syncBindings[0]->bindingId !== null) {
+                    $primaryBindings[$syncBindings[0]->bindingId] = true;
+                }
                 continue;
             }
 
@@ -651,8 +779,8 @@ final class RegistryCompiler
                 $diagnostics[] = $this->error(
                     RegistryDiagnosticCode::CommandPrimaryMissing,
                     sprintf('Command "%s" must have exactly one primary handler.', $message),
-                    sourceClass: $syncBindings[0]->handler,
-                    bindingId: $syncBindings[0]->id,
+                    sourceClass: $syncBindings[0]->action,
+                    bindingId: $syncBindings[0]->bindingId,
                     suggestion: 'Set primary: true on exactly one CommandHandler.',
                 );
 
@@ -663,16 +791,16 @@ final class RegistryCompiler
                 $diagnostics[] = $this->error(
                     RegistryDiagnosticCode::CommandPrimaryDuplicate,
                     sprintf('Command "%s" has more than one primary handler.', $message),
-                    sourceClass: $explicitPrimary[0]->handler,
-                    bindingId: $explicitPrimary[0]->id,
+                    sourceClass: $explicitPrimary[0]->action,
+                    bindingId: $explicitPrimary[0]->bindingId,
                     suggestion: 'Keep primary: true on one CommandHandler only.',
                 );
 
                 continue;
             }
 
-            if ($explicitPrimary !== []) {
-                $primaryBindings[$explicitPrimary[0]->id] = true;
+            if ($explicitPrimary !== [] && $explicitPrimary[0]->bindingId !== null) {
+                $primaryBindings[$explicitPrimary[0]->bindingId] = true;
             }
         }
 
@@ -705,7 +833,7 @@ final class RegistryCompiler
                 }
 
                 $reflection = new ReflectionClass($middleware);
-                if (!$reflection->isInstantiable()) {
+                if (!$reflection->isInstantiable() || !is_a($middleware, InterceptorInterface::class, true)) {
                     $diagnostics[] = $this->error(
                         RegistryDiagnosticCode::InterceptorInvalid,
                         sprintf('Flow interceptor "%s" must be instantiable.', $middleware),
@@ -883,6 +1011,47 @@ final class RegistryCompiler
     private function isNamedType(?ReflectionType $type, string $name): bool
     {
         return $type instanceof ReflectionNamedType && $type->getName() === $name;
+    }
+
+    /**
+     * @param array<string, class-string> $aliases
+     * @return array<class-string, string>
+     */
+    private function messageNames(array $aliases): array
+    {
+        $messageNames = [];
+        foreach ($aliases as $alias => $message) {
+            $messageNames[$message] = $alias;
+        }
+        ksort($messageNames, SORT_STRING);
+
+        return $messageNames;
+    }
+
+    /**
+     * @param list<HandlerBindingDefinition> $bindings
+     * @param array<string, class-string> $aliases
+     * @param array<class-string, string> $messageNames
+     */
+    private function graphContext(
+        RegistryCompilationStage $stage,
+        array $bindings,
+        array $aliases,
+        array $messageNames,
+        FlowRegistry $flows,
+    ): RegistryCompilationGraphContext {
+        return new RegistryCompilationGraphContext($stage, $bindings, $aliases, $messageNames, $flows);
+    }
+
+    /** @param list<RegistryDiagnostic> $diagnostics */
+    private function result(
+        ?CompiledRegistry $registry,
+        array $diagnostics,
+        RegistryCompilationGraphContext $graphContext,
+    ): RegistryCompilationResult {
+        $this->sortDiagnostics($diagnostics);
+
+        return new RegistryCompilationResult($registry, $diagnostics, $graphContext);
     }
 
     /**

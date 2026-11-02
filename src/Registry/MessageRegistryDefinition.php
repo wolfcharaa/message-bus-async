@@ -10,7 +10,7 @@ final readonly class MessageRegistryDefinition
 {
     /**
      * @param array<class-string, list<string>> $messages
-     * @param array<string, HandlerBinding> $bindings
+     * @param array<string, HandlerBindingDefinition> $bindings
      * @param array<string, class-string> $aliases
      * @param array<class-string, string> $messageNames
      */
@@ -38,7 +38,7 @@ final readonly class MessageRegistryDefinition
             'flows' => $this->flows->toArray(),
             'messages' => $this->messages,
             'bindings' => array_map(
-                static fn (HandlerBinding $binding): array => $binding->toArray(),
+                static fn (HandlerBindingDefinition $binding): array => $binding->toArray(),
                 $this->bindings,
             ),
             'aliases' => $this->aliases,
@@ -62,12 +62,12 @@ final readonly class MessageRegistryDefinition
             }
 
             /** @var array<string, mixed> $binding */
-            $definition = HandlerBinding::fromArray($binding);
-            if ($definition->id !== $bindingId) {
+            $definition = HandlerBindingDefinition::fromArray($binding);
+            if ($definition->bindingId !== $bindingId) {
                 throw new RegistryCompilationException(sprintf(
                     'Registry binding key `%s` does not match definition ID `%s`.',
                     $bindingId,
-                    $definition->id,
+                    $definition->bindingId ?? '',
                 ));
             }
             $bindings[$bindingId] = $definition;
@@ -88,7 +88,14 @@ final readonly class MessageRegistryDefinition
 
     public function compiledRegistry(): CompiledRegistry
     {
-        return new CompiledRegistry(array_values($this->bindings), $this->aliases, $this->flows);
+        return new CompiledRegistry(
+            array_map(
+                static fn (HandlerBindingDefinition $binding): HandlerBinding => $binding->compile(),
+                array_values($this->bindings),
+            ),
+            $this->aliases,
+            $this->flows,
+        );
     }
 
     /** @param array<string, mixed> $data */

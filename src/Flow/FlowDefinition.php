@@ -10,7 +10,7 @@ use Fedor\MessageBus\Queue\QueueDeliveryOptions;
 
 final readonly class FlowDefinition
 {
-    /** @param list<class-string<InterceptorInterface>> $middleware */
+    /** @param list<class-string> $middleware Validated by the registry compiler. */
     private function __construct(
         public string $key,
         public FlowMode $mode,
@@ -30,7 +30,7 @@ final readonly class FlowDefinition
         return new self(self::normalize($key), FlowMode::Async, [], null, null);
     }
 
-    /** @param class-string<InterceptorInterface> ...$middleware */
+    /** @param class-string ...$middleware */
     public function middleware(string ...$middleware): self
     {
         return new self($this->key, $this->mode, array_values($middleware), $this->transport, $this->delivery);
@@ -66,7 +66,7 @@ final readonly class FlowDefinition
      * @return array{
      *     key: string,
      *     mode: string,
-     *     middleware: list<class-string<InterceptorInterface>>,
+     *     middleware: list<class-string>,
      *     transport: array{transport: string, queue: string}|null,
      *     delivery: array{priority: ?int, delaySeconds: ?int, retryPolicy: ?string}|null
      * }

@@ -20,6 +20,7 @@ use Fedor\MessageBus\Message\Query;
 use Fedor\MessageBus\Queue\QueueDeliveryOptions;
 use Fedor\MessageBus\Registry\CompiledMessageRegistry;
 use Fedor\MessageBus\Registry\HandlerBinding;
+use Fedor\MessageBus\Registry\HandlerBindingDefinition;
 use Fedor\MessageBus\Registry\MessageRegistryCompiler;
 use Fedor\MessageBus\Registry\MessageRegistryCompilerOptions;
 use Fedor\MessageBus\Registry\Metadata\BindingRegistrationContext;
@@ -45,6 +46,7 @@ final class RegistryParityTest extends TestCase
         $binding = $registry->bindingsForMessage(ParityLocalQuery::class)[0] ?? null;
 
         self::assertInstanceOf(HandlerBinding::class, $binding);
+        self::assertSame($binding->id, array_values($definition->bindings)[0]->bindingId);
         self::assertStringStartsWith('auto.', $binding->id);
         self::assertTrue($binding->primary);
         self::assertNull($registry->messageName(ParityLocalQuery::class));
@@ -147,6 +149,48 @@ final class RegistryParityTest extends TestCase
         self::assertSame('project.error', $failed->diagnostics[0]->code);
     }
 
+    public function testCompilerStopsAtActualV6BoundariesWithPartialGraph(): void
+    {
+        $compiler = new MessageRegistryCompiler();
+
+        $discovery = $compiler->compileWithDiagnostics([
+            ParityAbstractHandler::class,
+        ]);
+        self::assertNotNull($discovery->graphContext);
+        self::assertSame(RegistryCompilationStage::HandlersDiscovered, $discovery->graphContext->stage);
+        self::assertCount(1, $discovery->graphContext->bindings);
+
+        $aliases = $compiler->compileWithDiagnostics([
+            ParityAliasOwnerCommand::class,
+            ParityHydratedAliasHandler::class,
+        ]);
+        self::assertNotNull($aliases->graphContext);
+        self::assertSame(RegistryCompilationStage::AliasesHydrated, $aliases->graphContext->stage);
+        self::assertCount(1, $aliases->graphContext->bindings);
+        self::assertContains(RegistryDiagnosticCodes::ALIAS_DUPLICATE, array_map(
+            static fn (RegistryDiagnostic $diagnostic): string => $diagnostic->code,
+            $aliases->diagnostics,
+        ));
+
+        $normalization = $compiler->compileWithDiagnostics(
+            [ParityMissingBindingIdHandler::class],
+            self::flows(),
+        );
+        self::assertNotNull($normalization->graphContext);
+        self::assertSame(RegistryCompilationStage::BindingsNormalized, $normalization->graphContext->stage);
+
+        $core = $compiler->compileWithDiagnostics([
+            ParityInvalidSignatureHandler::class,
+        ]);
+        self::assertNotNull($core->graphContext);
+        self::assertSame(RegistryCompilationStage::CoreValidated, $core->graphContext->stage);
+        self::assertCount(1, $core->graphContext->bindings);
+        self::assertContains(RegistryDiagnosticCodes::HANDLER_INVALID_SIGNATURE, array_map(
+            static fn (RegistryDiagnostic $diagnostic): string => $diagnostic->code,
+            $core->diagnostics,
+        ));
+    }
+
     public function testValidationRulesAreRuntimeCheckedLikeV6(): void
     {
         $this->expectException(RegistryCompilationException::class);
@@ -166,7 +210,7 @@ final class RegistryParityTest extends TestCase
         );
 
         $stamped = $context->stamp($binding);
-        $restored = HandlerBinding::fromArray($stamped->toArray());
+        $restored = HandlerBindingDefinition::fromArray($stamped->toArray());
 
         self::assertNotNull($restored->owner);
         self::assertNotNull($restored->source);
@@ -304,6 +348,52 @@ final readonly class ParitySingleCommand implements Command
 final class ParitySingleCommandHandler
 {
     public function __invoke(ParitySingleCommand $command): void
+    {
+    }
+}
+
+final readonly class ParityAbstractCommand implements Command
+{
+}
+
+#[CommandHandler(ParityAbstractCommand::class, contextAware: false)]
+abstract class ParityAbstractHandler
+{
+    public function __invoke(ParityAbstractCommand $command): void
+    {
+    }
+}
+
+#[MessageAlias('parity.duplicate')]
+final readonly class ParityAliasOwnerCommand implements Command
+{
+}
+
+#[MessageAlias('parity.duplicate')]
+final readonly class ParityHydratedAliasCommand implements Command
+{
+}
+
+#[CommandHandler(ParityHydratedAliasCommand::class, contextAware: false)]
+final class ParityHydratedAliasHandler
+{
+    public function __invoke(ParityHydratedAliasCommand $command): void
+    {
+    }
+}
+
+final readonly class ParityInvalidSignatureCommand implements Command
+{
+}
+
+final readonly class ParityWrongCommand implements Command
+{
+}
+
+#[CommandHandler(ParityInvalidSignatureCommand::class, contextAware: false)]
+final class ParityInvalidSignatureHandler
+{
+    public function __invoke(ParityWrongCommand $command): void
     {
     }
 }

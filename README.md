@@ -11,9 +11,9 @@ producer-facing durable queue boundary.
 > are ported from its source and tests unless an AMPHP/lifecycle/package-split
 > delta has already been accepted. Flow, identity, delivery, and cardinality
 > semantics, diagnostic contracts, validation rules, registration metadata, and
-> the registry definition/artifact lifecycle have been reconciled. The exact v6
-> early-exit compilation graph plus custom flow context/execution-strategy
-> wiring remain the next parity slice.
+> the registry definition/artifact lifecycle have been reconciled. The v6
+> early-exit compilation graph now preserves partial graph context; custom flow
+> context/execution-strategy wiring remains the next parity slice.
 
 ## Implemented Contract
 
@@ -109,13 +109,15 @@ hint, severity, and the last `RegistryCompilationStage`. Core validation is
 followed by project `RegistryValidationRuleInterface` rules; warnings can be
 promoted to strict compilation failure through `MessageRegistryCompilerOptions`.
 An error result never contains a definition. `compile()` throws a typed
-`RegistryCompilationException` that retains all diagnostics. The public stage
-contract is restored; the internal compiler still needs the v6 early-exit graph
-and partial graph-context fixtures before registry compilation parity is closed.
+`RegistryCompilationException` that retains all diagnostics. Discovery, alias
+hydration, binding normalization, core validation, project rules, and definition
+building are separate early-exit stages with partial `HandlerBindingDefinition`
+graphs available to diagnostics tooling.
 
 `MessageRegistryDefinition` preserves the v6 schema metadata: schema and library
 versions, generation time, source hash, flows, message-to-binding index,
-bindings, aliases, and reverse message names. Bindings keep typed handler and
+bindings, aliases, and reverse message names. Compile-time bindings retain the
+v6 nullable normalization state; hydrated runtime bindings use typed handler and
 interceptor `ServiceReference` values as the accepted lifecycle adaptation.
 
 `SymfonyVarExporterRegistryDumper` writes the definition as a PHP file returning
@@ -192,5 +194,15 @@ slice that uses them.
 The repository currently contains public interaction contracts, compile-time
 attributes, deterministic registry compilation, neutral service resolution, and
 the versioned compiled-registry artifact. The executable bus runtime and durable
-codecs are not implemented yet. Installation commands, end-to-end examples, and
-contributor checks will be documented after executable tests exist.
+codecs are not implemented yet.
+
+Run the package quality gates with:
+
+```bash
+composer validate --strict
+composer analyse
+composer test
+```
+
+`composer analyse` runs the package-owned PHPStan dependency at level max over
+`src` and `tests`; it does not rely on a globally installed binary.

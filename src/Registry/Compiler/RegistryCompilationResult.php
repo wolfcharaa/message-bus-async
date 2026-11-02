@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Fedor\MessageBus\Registry\Compiler;
 
 use Fedor\MessageBus\Registry\CompiledRegistry;
+use Fedor\MessageBus\Registry\RegistryCompilationGraphContext;
 use LogicException;
 
 final readonly class RegistryCompilationResult
@@ -13,6 +14,7 @@ final readonly class RegistryCompilationResult
     public function __construct(
         public ?CompiledRegistry $registry,
         public array $diagnostics,
+        public RegistryCompilationGraphContext $graphContext,
     ) {
         if ($this->registry !== null && $this->hasErrors()) {
             throw new LogicException('A compiled registry cannot contain error diagnostics.');

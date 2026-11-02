@@ -4,7 +4,7 @@ declare(strict_types=1);
 
 namespace Fedor\MessageBus\Registry\Metadata;
 
-use Fedor\MessageBus\Registry\HandlerBinding;
+use Fedor\MessageBus\Registry\HandlerBindingDefinition;
 use LogicException;
 
 final readonly class BindingRegistrationContext
@@ -15,12 +15,15 @@ final readonly class BindingRegistrationContext
     ) {
     }
 
-    public function stamp(HandlerBinding $binding, ?RegistrySource $source = null): HandlerBinding
+    public function stamp(
+        HandlerBindingDefinition $binding,
+        ?RegistrySource $source = null,
+    ): HandlerBindingDefinition
     {
         if ($binding->owner !== null && !$binding->owner->equals($this->owner)) {
             throw new LogicException(sprintf(
                 'Binding `%s` already belongs to `%s:%s`, cannot stamp as `%s:%s`.',
-                $binding->id,
+                $binding->bindingId ?? $binding->action,
                 $binding->owner->kind,
                 $binding->owner->id,
                 $this->owner->kind,
