@@ -35,8 +35,10 @@ Root execution settings are carried by immutable
 `Cancellation`, portable initial `Headers`, and an optional external correlation
 seed. The bus implementation will create the internal context and propagate
 those values to nested executions; callers will not construct or mutate that
-context. Deadlines are expressed with AMPHP `TimeoutCancellation` instead of a
-second timeout abstraction.
+context. Each handler context receives its stable binding ID, while the durable
+envelope preserves the original `createdAt` timestamp across replay. Deadlines
+are expressed with AMPHP `TimeoutCancellation` instead of a second timeout
+abstraction.
 
 The library owns immutable envelope identity. A replaceable
 `MessageIdGeneratorInterface` creates opaque message IDs; the built-in random
@@ -125,6 +127,10 @@ Registry declarations preserve the attribute model of the previous package:
 - `CommandHandler` additionally declares the optional primary binding marker;
 - command/event attributes retain delay and retry-policy delivery overrides.
 
+The attributes also retain the v6 `ownerKind`, `ownerId`, and optional
+`source*` provenance fields. They are required when a project flow contract
+must prove that a binding and its policy belong to the same package or feature.
+
 Attributes are compile-time metadata only. The compiler receives an
 explicit list of message and handler classes, inspects only those classes, and
 produces a compiled registry definition. Composer namespace traversal,
@@ -188,6 +194,17 @@ Cross-cutting execution reuses the interceptor model:
 The pipeline has no container or registry dependency and cannot execute its
 terminal handler twice. Logging, tracing, cache, validation, and transaction
 behavior are interceptors; no parallel middleware abstraction is introduced.
+
+Handler idempotency preserves the proven v6 interceptor model. A policy extracts
+a normalized key, fingerprints the message intent, and asks an
+`IdempotencyStoreInterface` for one of four decisions: claimed, completed with
+the same intent, already in progress, or conflict. Claimed work runs the handler
+and records completion; a completed replay is a no-op; in-progress is retryable;
+and conflict is non-retryable. A flow contract can require a stable binding ID,
+matching owner metadata, the idempotency interceptor role, command/event kinds,
+and transaction-before-idempotency ordering. This does not add producer-side
+enqueue deduplication: deterministic queue keys remain a separate transport
+enhancement. See the [idempotency reference](docs/reference/idempotency.md).
 
 `SequentialExecutionStrategy` preserves the v6 local execution contract:
 bindings run by descending priority, flow interceptors wrap binding interceptors,

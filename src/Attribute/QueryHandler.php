@@ -24,7 +24,27 @@ final class QueryHandler extends AbstractMessageHandlerAttribute
         string|BackedEnum|null $bindingId = null,
         array $middleware = [],
         bool $contextAware = true,
+        ?string $ownerKind = null,
+        ?string $ownerId = null,
+        ?string $sourceType = null,
+        ?string $sourceName = null,
+        ?string $sourcePackage = null,
+        ?string $sourceLocation = null,
     ) {
-        parent::__construct($message, $flow, $method, $priority, $bindingId, $middleware, $contextAware);
+        parent::__construct(
+            $message,
+            $flow,
+            $method,
+            $priority,
+            $bindingId,
+            $middleware,
+            $contextAware,
+            $ownerKind,
+            $ownerId,
+            $sourceType,
+            $sourceName,
+            $sourcePackage,
+            $sourceLocation,
+        );
     }
 }

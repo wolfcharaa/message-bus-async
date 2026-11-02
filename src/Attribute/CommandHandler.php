@@ -28,8 +28,28 @@ final class CommandHandler extends AbstractMessageHandlerAttribute
         public readonly ?int $delaySeconds = null,
         public readonly ?string $retryPolicy = null,
         bool $contextAware = true,
+        ?string $ownerKind = null,
+        ?string $ownerId = null,
+        ?string $sourceType = null,
+        ?string $sourceName = null,
+        ?string $sourcePackage = null,
+        ?string $sourceLocation = null,
     ) {
-        parent::__construct($message, $flow, $method, $priority, $bindingId, $middleware, $contextAware);
+        parent::__construct(
+            $message,
+            $flow,
+            $method,
+            $priority,
+            $bindingId,
+            $middleware,
+            $contextAware,
+            $ownerKind,
+            $ownerId,
+            $sourceType,
+            $sourceName,
+            $sourcePackage,
+            $sourceLocation,
+        );
     }
 
     public function delivery(): ?QueueDeliveryOptions

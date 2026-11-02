@@ -347,6 +347,8 @@ final class RegistryCompiler
                         $attribute->contextAware()
                             ? HandlerInvocationMode::ContextAware
                             : HandlerInvocationMode::Contextless,
+                        owner: $attribute->registrationOwner(),
+                        source: $attribute->registrationSource($handlerClass),
                     );
                 } catch (Throwable $exception) {
                     $diagnostics[] = $this->errorForClass(
