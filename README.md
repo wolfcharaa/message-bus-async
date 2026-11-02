@@ -92,6 +92,13 @@ async-only command. Event publication executes every local and queued subscriber
 and returns one aggregate `PublishResult`; failures retain successful siblings
 inside `PublishFailed`.
 
+A contextless sync binding on the sequential strategy executes directly when
+neither its flow nor the binding declares interceptors. This preserves the v6
+contract: the handler receives only the message, bindings keep descending
+priority order, and the runtime does not resolve a context factory merely to
+discard its context. As soon as an interceptor is present, the normal context
+and pipeline path is used.
+
 Handlers are invokable objects with one of two supported shapes:
 
 - `__invoke(Message $message): TResult|void` for a contextless handler;
@@ -209,6 +216,15 @@ native scoped providers to these contracts; the core package does not require
 Thesis DIC or PSR-11. The resolver is infrastructure for the bus and is never
 exposed through `MessageContextInterface` as a service locator.
 
+Optional adapters are available without making either container a runtime
+dependency of the core package. `PsrContainerServiceResolver` validates PSR-11
+entries against the compiled `ServiceReference` type. For Thesis DIC,
+`ThesisServiceResolver` accepts provider closures created by `Dic::provider()`,
+while `ThesisServiceScopeFactory` adapts a `Scoped<ServiceResolverInterface>`
+handle to the bus scope contract. Each root execution owns a fresh Thesis scope;
+parallel fibers remain isolated, nested dispatch reuses the same resolver, and
+the execution failure reaches Thesis disposers before teardown completes.
+
 Event publication reports every matched binding as a local or queued
 `PublishedExecution`. A partial failure throws `PublishFailed`; the exception
 retains the partial `PublishResult`, including successful executions and
@@ -249,8 +265,9 @@ The repository currently contains public interaction contracts, compile-time
 attributes, deterministic registry compilation, neutral scoped resolution, the
 versioned compiled-registry artifact, custom flow contexts, local sequential and
 queue-producer strategies, explicit versioned JSON codecs/upcasters, and the
-composite bus runtime with nested causation and aggregate fan-out. The concrete
-PostgreSQL producer and Thesis DIC integration adapter are not implemented yet.
+composite bus runtime with nested causation and aggregate fan-out. Optional
+PSR-11 and Thesis DIC adapters preserve typed resolution and per-root scope
+isolation. The concrete PostgreSQL producer is not implemented yet.
 
 Run the package quality gates with:
 
