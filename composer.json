@@ -7,6 +7,7 @@
         "php": "^8.4.12",
         "ext-json": "*",
         "amphp/amp": "^3.1",
+        "amphp/postgres": "^2.2.1",
         "psr/clock": "^1.0",
         "symfony/var-exporter": "^7.4"
     },
@@ -30,8 +31,9 @@
         "sort-packages": true
     },
     "scripts": {
-        "analyse": "phpstan analyse --level=max src tests",
-        "test": "phpunit --do-not-cache-result"
+        "analyse": "phpstan analyse --level=max src tests integration-tests",
+        "test": "phpunit --do-not-cache-result",
+        "test:integration": "phpunit --configuration phpunit.integration.xml.dist --do-not-cache-result"
     },
     "minimum-stability": "stable",
     "suggest": {

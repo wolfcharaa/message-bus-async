@@ -32,10 +32,13 @@ final readonly class JsonEnvelopeSerializer implements EnvelopeSerializerInterfa
         ];
 
         try {
-            return new SerializedEnvelope(json_encode(
-                $payload,
-                JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE,
-            ));
+            return new SerializedEnvelope(
+                $message->alias,
+                json_encode(
+                    $payload,
+                    JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE,
+                ),
+            );
         } catch (JsonException $exception) {
             throw new InvalidSerializedEnvelope('Envelope cannot be encoded as JSON.', previous: $exception);
         }
@@ -74,6 +77,9 @@ final readonly class JsonEnvelopeSerializer implements EnvelopeSerializerInterfa
         $version = $message['version'] ?? null;
         if (!is_string($alias) || trim($alias) === '' || !is_int($version) || !array_key_exists('payload', $message)) {
             throw new InvalidSerializedEnvelope('Envelope message alias, version, and payload are required.');
+        }
+        if ($alias !== $envelope->messageName) {
+            throw new InvalidSerializedEnvelope('Envelope message name does not match its payload alias.');
         }
         $payload = JsonValue::from($message['payload']);
 

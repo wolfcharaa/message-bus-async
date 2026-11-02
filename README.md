@@ -199,8 +199,13 @@ uses the neutral service resolver and a container-free callable invoker;
 flow, binding, and execution delivery options are merged; retry policies are
 snapshotted into each `QueueMessage`; and single or batch enqueue failures are
 reported per binding. Queue providers receive the AMPHP cancellation directly.
-The core owns enqueue contracts only—claim, heartbeat, ack/retry/reject, stale
-recovery, and process control remain worker-package responsibilities.
+`PostgresQueueGateway` implements enqueue, atomic batch enqueue, status polling,
+pending cancellation, and cooperative cancellation requests through
+`amphp/postgres`; no PDO path exists in the package. The core owns the shared
+queue schema, while claim, heartbeat, ack/retry/reject, stale recovery, and
+process control remain worker-package responsibilities. See the
+[PostgreSQL queue reference](docs/reference/postgres-queue.md) for state
+transitions, at-least-once semantics, cancellation limits, and schema ownership.
 
 Compiled bindings refer to handlers and interceptors through typed
 `ServiceReference<T>` values. Core resolution is expressed by three neutral
@@ -231,7 +236,7 @@ retains the partial `PublishResult`, including successful executions and
 structured failures. Callers therefore cannot silently ignore a failed fan-out
 branch, while queue message IDs remain available for status polling.
 
-## Planned Responsibility
+## Responsibility Boundary
 
 The core package will own:
 
@@ -240,7 +245,7 @@ The core package will own:
 - deterministic registry and stable message aliases;
 - versioned JSON codecs and upcasters;
 - durable publish, status, cancellation, retry, and queue schema contracts;
-- an AMPHP-compatible PostgreSQL producer boundary.
+- the AMPHP PostgreSQL producer/status/cancel gateway.
 
 Worker execution, heartbeat, stale recovery, process control, and worker CLI
 belong to the optional `romanfedorskij/message-bus-async-worker` package.
@@ -252,8 +257,10 @@ resolution and lifecycle behavior will be connected through adapters.
 
 - PHP `8.4.12` or newer within the PHP 8 major line;
 - JSON extension;
-- `amphp/amp` `3.1.x` or a compatible 3.x release.
-- `psr/clock` `1.0.x` for deterministic delayed delivery.
+- `amphp/amp` `3.1.x` or a compatible 3.x release;
+- `amphp/postgres` `2.2.1` or a compatible 2.x release, with `ext-pgsql` or
+  `ext-pq` available in the process using the PostgreSQL gateway;
+- `psr/clock` `1.0.x` for deterministic delayed delivery;
 - `symfony/var-exporter` `7.4.x` or a compatible 7.x release.
 
 Additional runtime dependencies will be declared only with the implementation
@@ -267,7 +274,10 @@ versioned compiled-registry artifact, custom flow contexts, local sequential and
 queue-producer strategies, explicit versioned JSON codecs/upcasters, and the
 composite bus runtime with nested causation and aggregate fan-out. Optional
 PSR-11 and Thesis DIC adapters preserve typed resolution and per-root scope
-isolation. The concrete PostgreSQL producer is not implemented yet.
+isolation. The shared PostgreSQL schema and AMP producer/status/cancel gateway
+are implemented and covered by an opt-in real PostgreSQL integration suite.
+Worker consumption transitions and deterministic enqueue idempotency remain the
+next implementation slices.
 
 Run the package quality gates with:
 
@@ -278,4 +288,10 @@ composer test
 ```
 
 `composer analyse` runs the package-owned PHPStan dependency at level max over
-`src` and `tests`; it does not rely on a globally installed binary.
+`src`, `tests`, and `integration-tests`; it does not rely on a globally
+installed binary. The PostgreSQL integration gate expects a disposable database:
+
+```bash
+MESSAGE_BUS_TEST_POSTGRES_CONFIG='host=127.0.0.1 port=5432 user=test password=test db=test' \
+    composer test:integration
+```

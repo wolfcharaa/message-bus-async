@@ -49,6 +49,7 @@ final class JsonEnvelopeSerializerTest extends TestCase
         $serialized = $serializer->serialize($envelope);
 
         self::assertSame(SerializedEnvelope::SCHEMA_VERSION, $serialized->schemaVersion);
+        self::assertSame('address.registered', $serialized->messageName);
         self::assertSame(
             '{"message":{"alias":"address.registered","version":1,"payload":{"city":"Москва","postalCode":"101000","country":"RU"}},"metadata":{"messageId":"message-1","correlationId":"correlation-1","causationId":"causation-1","headers":{"trace":"trace-1","attempt":2}}}',
             $serialized->payload,
@@ -69,7 +70,7 @@ final class JsonEnvelopeSerializerTest extends TestCase
             [new CodecAddressRegisteredV3()],
             [new CodecAddressV1ToV2(), new CodecAddressV2ToV3()],
         ));
-        $fixture = new SerializedEnvelope(<<<'JSON'
+        $fixture = new SerializedEnvelope('address.registered', <<<'JSON'
             {"message":{"alias":"address.registered","version":1,"payload":{"city":"Москва","zip":"101000"}},"metadata":{"messageId":"old-1","correlationId":"old-correlation","causationId":null,"headers":{}}}
             JSON);
 
@@ -141,16 +142,25 @@ final class JsonEnvelopeSerializerTest extends TestCase
         ]));
 
         try {
-            $serializer->deserialize(new SerializedEnvelope('{}', 2));
+            $serializer->deserialize(new SerializedEnvelope('address.registered', '{}', 2));
             self::fail('Expected unsupported envelope schema to be rejected.');
         } catch (InvalidSerializedEnvelope $exception) {
             self::assertStringContainsString('schema version 2 is not supported', $exception->getMessage());
         }
 
+        try {
+            $serializer->deserialize(new SerializedEnvelope('other.message', <<<'JSON'
+                {"message":{"alias":"address.registered","version":1,"payload":{}},"metadata":{"messageId":"m","correlationId":"c","causationId":null,"headers":{}}}
+                JSON));
+            self::fail('Expected the durable message name mismatch to be rejected.');
+        } catch (InvalidSerializedEnvelope $exception) {
+            self::assertStringContainsString('does not match its payload alias', $exception->getMessage());
+        }
+
         $this->expectException(InvalidSerializedEnvelope::class);
         $this->expectExceptionMessage('metadata has invalid field types');
 
-        $serializer->deserialize(new SerializedEnvelope(<<<'JSON'
+        $serializer->deserialize(new SerializedEnvelope('address.registered', <<<'JSON'
             {"message":{"alias":"address.registered","version":1,"payload":{}},"metadata":{"messageId":12,"correlationId":"c","causationId":null,"headers":{}}}
             JSON));
     }

@@ -321,7 +321,7 @@ final class QueueEnvelopeSerializer implements EnvelopeSerializerInterface
     #[\Override]
     public function serialize(Envelope $envelope): SerializedEnvelope
     {
-        return new SerializedEnvelope('{"schemaVersion":1}');
+        return new SerializedEnvelope('queue.event', '{"schemaVersion":1}');
     }
 
     #[\Override]
