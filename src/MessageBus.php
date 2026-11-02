@@ -16,6 +16,8 @@ use Fedor\MessageBus\Execution\ExecutionRequest;
 use Fedor\MessageBus\Execution\HandlerExecutionResult;
 use Fedor\MessageBus\Execution\HandlerExecutionResultInterface;
 use Fedor\MessageBus\Execution\HandlerExecutionStrategyInterface;
+use Fedor\MessageBus\Execution\HandlerResult;
+use Fedor\MessageBus\Execution\SequentialExecutionStrategy;
 use Fedor\MessageBus\Flow\FlowDefinition;
 use Fedor\MessageBus\Identity\RandomMessageIdGenerator;
 use Fedor\MessageBus\Invoker\CallableInvokerInterface;
@@ -34,6 +36,7 @@ use Fedor\MessageBus\Queue\RetryPolicyRegistryInterface;
 use Fedor\MessageBus\Registry\BindingNotFound;
 use Fedor\MessageBus\Registry\CompiledMessageRegistry;
 use Fedor\MessageBus\Registry\HandlerBinding;
+use Fedor\MessageBus\Registry\HandlerInvocationMode;
 use Fedor\MessageBus\Registry\HandlerKind;
 use Fedor\MessageBus\Service\ServiceReference;
 use Fedor\MessageBus\Service\ServiceScopeFactoryInterface;
@@ -191,20 +194,75 @@ final class MessageBus implements MessageBusInterface
         $result = new HandlerExecutionResult();
         foreach ($this->groupByFlow($bindings) as $flowKey => $flowBindings) {
             $flow = $this->registry->compiled()->flows->get($flowKey);
-            $context = $this->createContext($flow, $envelope, $options, $scope);
-            $strategy = $this->strategy($flow->strategy, $scope);
-            $flowResult = $strategy->execute(new ExecutionRequest(
-                $flowBindings,
-                $context,
-                $flow,
-                $options,
-                $this->environment($scope),
-            ));
+            if ($this->canExecuteDirectly($flow, $flowBindings)) {
+                $flowResult = $this->executeDirectly($flowBindings, $envelope, $options, $scope);
+            } else {
+                $context = $this->createContext($flow, $envelope, $options, $scope);
+                $strategy = $this->strategy($flow->strategy, $scope);
+                $flowResult = $strategy->execute(new ExecutionRequest(
+                    $flowBindings,
+                    $context,
+                    $flow,
+                    $options,
+                    $this->environment($scope),
+                ));
+            }
 
             $result = new HandlerExecutionResult(...$result->all(), ...$flowResult->all());
         }
 
         return $result;
+    }
+
+    /** @param non-empty-list<HandlerBinding> $bindings */
+    private function executeDirectly(
+        array $bindings,
+        Envelope $envelope,
+        ExecutionOptions $options,
+        ServiceScopeInterface $scope,
+    ): HandlerExecutionResultInterface {
+        $results = [];
+        foreach ($this->sortBindingsByPriority($bindings) as $binding) {
+            $options->cancellation->throwIfRequested();
+            $handler = $scope->resolve($binding->handler);
+            $results[] = HandlerResult::success(
+                $binding->id,
+                $binding->handler->type,
+                $this->invoker->invoke($handler, $binding->method, [$envelope->message]),
+            );
+        }
+
+        return new HandlerExecutionResult(...$results);
+    }
+
+    /** @param non-empty-list<HandlerBinding> $bindings */
+    private function canExecuteDirectly(FlowDefinition $flow, array $bindings): bool
+    {
+        if ($flow->strategy !== SequentialExecutionStrategy::class || $flow->middleware !== []) {
+            return false;
+        }
+
+        foreach ($bindings as $binding) {
+            if ($binding->invocationMode !== HandlerInvocationMode::Contextless || $binding->interceptors !== []) {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    /**
+     * @param non-empty-list<HandlerBinding> $bindings
+     * @return non-empty-list<HandlerBinding>
+     */
+    private function sortBindingsByPriority(array $bindings): array
+    {
+        usort(
+            $bindings,
+            static fn (HandlerBinding $left, HandlerBinding $right): int => $right->priority <=> $left->priority,
+        );
+
+        return $bindings;
     }
 
     /**
@@ -223,7 +281,7 @@ final class MessageBus implements MessageBusInterface
         foreach ($this->groupByFlow($bindings) as $flowKey => $flowBindings) {
             $flow = $this->registry->compiled()->flows->get($flowKey);
             if ($flow->isSync()) {
-                foreach ($flowBindings as $binding) {
+                foreach ($this->sortBindingsByPriority($flowBindings) as $binding) {
                     try {
                         $execution = $this->executeBindings([$binding], $envelope, $options, $scope);
                         foreach ($execution->all() as $handlerResult) {

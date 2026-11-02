@@ -35,6 +35,7 @@ use Fedor\MessageBus\Registry\RegistryDiagnosticSeverity;
 use Fedor\MessageBus\Registry\RegistryRuntimeLoader;
 use Fedor\MessageBus\Registry\RegistryValidationRuleInterface;
 use PHPUnit\Framework\TestCase;
+use RuntimeException;
 use stdClass;
 
 final class RegistryParityTest extends TestCase
@@ -116,6 +117,20 @@ final class RegistryParityTest extends TestCase
                 $result->diagnostics,
             ));
         }
+    }
+
+    public function testRuntimeLoaderCanRequireCompiledArtifactLikeV6(): void
+    {
+        $missing = sys_get_temp_dir() . '/missing-message-bus-registry-' . bin2hex(random_bytes(6)) . '.php';
+
+        $this->expectException(RuntimeException::class);
+        $this->expectExceptionMessage('Compiled message registry file is required');
+
+        (new RegistryRuntimeLoader())->load(
+            [ParityLocalQueryHandler::class],
+            compiledFile: $missing,
+            requireCompiled: true,
+        );
     }
 
     public function testProjectValidationRulesPreserveWarningPolicyAndGraphContext(): void
