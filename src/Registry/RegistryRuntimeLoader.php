@@ -1,0 +1,38 @@
+<?php
+
+declare(strict_types=1);
+
+namespace Fedor\MessageBus\Registry;
+
+use Fedor\MessageBus\Flow\FlowRegistry;
+use RuntimeException;
+
+final readonly class RegistryRuntimeLoader
+{
+    public function __construct(private MessageRegistryCompiler $compiler = new MessageRegistryCompiler())
+    {
+    }
+
+    /** @param list<class-string> $classes */
+    public function load(
+        array $classes,
+        ?string $compiledFile = null,
+        ?FlowRegistry $flows = null,
+        string $libraryVersion = MessageRegistryCompiler::LIBRARY_VERSION,
+        string $sourceHash = '',
+        bool $preferCompiled = true,
+        bool $requireCompiled = false,
+    ): CompiledMessageRegistry {
+        if ($compiledFile !== null && $preferCompiled && is_file($compiledFile)) {
+            return CompiledMessageRegistry::fromFile($compiledFile);
+        }
+
+        if ($requireCompiled) {
+            throw new RuntimeException('Compiled message registry file is required but was not found.');
+        }
+
+        return new CompiledMessageRegistry(
+            $this->compiler->compile($classes, $flows, $libraryVersion, $sourceHash),
+        );
+    }
+}
