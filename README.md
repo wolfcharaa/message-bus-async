@@ -153,6 +153,13 @@ and fail-fast can be disabled to collect per-binding failures. `ExecutionRequest
 uses the neutral service resolver and a container-free callable invoker;
 `HandlerExecutionResult` keeps lookup by stable binding ID or action class.
 
+`QueueExecutionStrategy` preserves the producer side of the v6 async contract:
+flow, binding, and execution delivery options are merged; retry policies are
+snapshotted into each `QueueMessage`; and single or batch enqueue failures are
+reported per binding. Queue providers receive the AMPHP cancellation directly.
+The core owns enqueue contracts only—claim, heartbeat, ack/retry/reject, stale
+recovery, and process control remain worker-package responsibilities.
+
 Compiled bindings refer to handlers and interceptors through typed
 `ServiceReference<T>` values. Core resolution is expressed by three neutral
 contracts:
@@ -195,6 +202,7 @@ resolution and lifecycle behavior will be connected through adapters.
 - PHP `8.4.12` or newer within the PHP 8 major line;
 - JSON extension;
 - `amphp/amp` `3.1.x` or a compatible 3.x release.
+- `psr/clock` `1.0.x` for deterministic delayed delivery.
 - `symfony/var-exporter` `7.4.x` or a compatible 7.x release.
 
 Additional runtime dependencies will be declared only with the implementation
@@ -205,8 +213,8 @@ slice that uses them.
 The repository currently contains public interaction contracts, compile-time
 attributes, deterministic registry compilation, neutral service resolution, and
 the versioned compiled-registry artifact, custom flow contexts, and local
-sequential execution. The composite bus runtime, durable producer strategy, and
-durable codecs are not implemented yet.
+sequential and queue-producer strategies. The composite bus runtime, concrete
+PostgreSQL producer adapter, and durable codecs are not implemented yet.
 
 Run the package quality gates with:
 

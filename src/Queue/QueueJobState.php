@@ -1,0 +1,15 @@
+<?php
+
+declare(strict_types=1);
+
+namespace Fedor\MessageBus\Queue;
+
+enum QueueJobState: string
+{
+    case Pending = 'pending';
+    case Running = 'running';
+    case Succeeded = 'succeeded';
+    case Failed = 'failed';
+    case Cancelled = 'cancelled';
+    case Interrupted = 'interrupted';
+}

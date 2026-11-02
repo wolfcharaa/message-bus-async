@@ -10,6 +10,7 @@ use Fedor\MessageBus\Context\MessageContextInterface;
 use Fedor\MessageBus\Envelope\Envelope;
 use Fedor\MessageBus\Execution\ExecutionOptions;
 use Fedor\MessageBus\Execution\ExecutionRequest;
+use Fedor\MessageBus\Execution\ExecutionEnvironment;
 use Fedor\MessageBus\Execution\SequentialExecutionStrategy;
 use Fedor\MessageBus\Flow\FlowDefinition;
 use Fedor\MessageBus\Interceptor\InterceptorInterface;
@@ -53,8 +54,7 @@ final class SequentialExecutionStrategyTest extends TestCase
             $context,
             FlowDefinition::sync('default')->middleware(StrategyFlowInterceptor::class),
             new ExecutionOptions(),
-            $resolver,
-            new ReflectionCallableInvoker(),
+            new ExecutionEnvironment($resolver, new ReflectionCallableInvoker()),
         );
 
         $result = (new SequentialExecutionStrategy())->execute($request);
@@ -87,8 +87,7 @@ final class SequentialExecutionStrategyTest extends TestCase
             new StrategyContext(self::envelope()),
             FlowDefinition::sync('default'),
             new ExecutionOptions(),
-            $resolver,
-            new ReflectionCallableInvoker(),
+            new ExecutionEnvironment($resolver, new ReflectionCallableInvoker()),
         );
 
         $result = (new SequentialExecutionStrategy(failFast: false))->execute($request);
@@ -112,8 +111,10 @@ final class SequentialExecutionStrategyTest extends TestCase
             new StrategyContext(self::envelope()),
             FlowDefinition::sync('default'),
             new ExecutionOptions(),
-            new StrategyResolver([StrategyLowHandler::class => new StrategyLowHandler()]),
-            new ReflectionCallableInvoker(),
+            new ExecutionEnvironment(
+                new StrategyResolver([StrategyLowHandler::class => new StrategyLowHandler()]),
+                new ReflectionCallableInvoker(),
+            ),
         );
         (new SequentialExecutionStrategy())->execute($request)->get('missing');
     }

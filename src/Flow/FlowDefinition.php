@@ -8,6 +8,8 @@ use BackedEnum;
 use Fedor\MessageBus\Context\DefaultMessageContext;
 use Fedor\MessageBus\Context\DefaultMessageContextFactory;
 use Fedor\MessageBus\Context\MessageContextInterface;
+use Fedor\MessageBus\Execution\QueueExecutionStrategy;
+use Fedor\MessageBus\Execution\SequentialExecutionStrategy;
 use Fedor\MessageBus\Interceptor\InterceptorInterface;
 use Fedor\MessageBus\Queue\QueueDeliveryOptions;
 
@@ -19,6 +21,7 @@ final readonly class FlowDefinition
         public FlowMode $mode,
         public string $contextInterface,
         public ?string $contextFactory,
+        public string $strategy,
         public array $middleware,
         public ?TransportDefinition $transport,
         public ?QueueDeliveryOptions $delivery,
@@ -32,6 +35,7 @@ final readonly class FlowDefinition
             FlowMode::Sync,
             MessageContextInterface::class,
             DefaultMessageContextFactory::class,
+            SequentialExecutionStrategy::class,
             [],
             null,
             null,
@@ -45,6 +49,7 @@ final readonly class FlowDefinition
             FlowMode::Async,
             MessageContextInterface::class,
             DefaultMessageContextFactory::class,
+            QueueExecutionStrategy::class,
             [],
             null,
             null,
@@ -60,6 +65,21 @@ final readonly class FlowDefinition
             $factory ?? (is_a(DefaultMessageContext::class, $interface, true)
                 ? DefaultMessageContextFactory::class
                 : null),
+            $this->strategy,
+            $this->middleware,
+            $this->transport,
+            $this->delivery,
+        );
+    }
+
+    public function strategy(string $strategy): self
+    {
+        return new self(
+            $this->key,
+            $this->mode,
+            $this->contextInterface,
+            $this->contextFactory,
+            $strategy,
             $this->middleware,
             $this->transport,
             $this->delivery,
@@ -74,6 +94,7 @@ final readonly class FlowDefinition
             $this->mode,
             $this->contextInterface,
             $this->contextFactory,
+            $this->strategy,
             array_values($middleware),
             $this->transport,
             $this->delivery,
@@ -87,6 +108,7 @@ final readonly class FlowDefinition
             $this->mode,
             $this->contextInterface,
             $this->contextFactory,
+            $this->strategy,
             $this->middleware,
             TransportDefinition::from($transport, $queue),
             $this->delivery,
@@ -100,6 +122,7 @@ final readonly class FlowDefinition
             $this->mode,
             $this->contextInterface,
             $this->contextFactory,
+            $this->strategy,
             $this->middleware,
             $this->transport,
             $delivery,
@@ -122,6 +145,7 @@ final readonly class FlowDefinition
      *     mode: string,
      *     contextInterface: string,
      *     contextFactory: ?string,
+     *     strategy: string,
      *     middleware: list<class-string>,
      *     transport: array{transport: string, queue: string}|null,
      *     delivery: array{priority: ?int, delaySeconds: ?int, retryPolicy: ?string}|null
@@ -134,6 +158,7 @@ final readonly class FlowDefinition
             'mode' => $this->mode->value,
             'contextInterface' => $this->contextInterface,
             'contextFactory' => $this->contextFactory,
+            'strategy' => $this->strategy,
             'middleware' => $this->middleware,
             'transport' => $this->transport?->toArray(),
             'delivery' => $this->delivery?->toArray(),
@@ -147,11 +172,13 @@ final readonly class FlowDefinition
         $mode = $data['mode'] ?? null;
         $contextInterface = $data['contextInterface'] ?? null;
         $contextFactory = $data['contextFactory'] ?? null;
+        $strategy = $data['strategy'] ?? null;
         if (
             !is_string($key)
             || !is_string($mode)
             || !is_string($contextInterface)
             || ($contextFactory !== null && !is_string($contextFactory))
+            || !is_string($strategy)
         ) {
             throw new \InvalidArgumentException('Flow key, mode, and context metadata must have valid types.');
         }
@@ -178,6 +205,7 @@ final readonly class FlowDefinition
             FlowMode::from($mode),
             $contextInterface,
             $contextFactory,
+            $strategy,
             $middleware,
             $transport,
             $delivery,

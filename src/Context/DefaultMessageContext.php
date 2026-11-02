@@ -63,6 +63,7 @@ final readonly class DefaultMessageContext implements MessageContextInterface
             cancellation: new CompositeCancellation($this->cancellation, $options->cancellation),
             headers: $options->headers,
             correlationId: $options->correlationId,
+            delivery: $options->delivery,
         );
     }
 }

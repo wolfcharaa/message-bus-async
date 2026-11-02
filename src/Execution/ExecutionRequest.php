@@ -7,9 +7,7 @@ namespace Fedor\MessageBus\Execution;
 use Closure;
 use Fedor\MessageBus\Context\MessageContextInterface;
 use Fedor\MessageBus\Flow\FlowDefinition;
-use Fedor\MessageBus\Invoker\CallableInvokerInterface;
 use Fedor\MessageBus\Registry\HandlerBinding;
-use Fedor\MessageBus\Service\ServiceResolverInterface;
 
 final readonly class ExecutionRequest
 {
@@ -25,8 +23,7 @@ final readonly class ExecutionRequest
         public MessageContextInterface $context,
         public FlowDefinition $flow,
         public ExecutionOptions $options,
-        public ServiceResolverInterface $services,
-        public CallableInvokerInterface $invoker,
+        public ExecutionEnvironment $environment,
         ?callable $contextForBinding = null,
     ) {
         $this->contextForBinding = $contextForBinding !== null

@@ -13,6 +13,7 @@ use Fedor\MessageBus\Context\DefaultMessageContext;
 use Fedor\MessageBus\Context\DefaultMessageContextFactory;
 use Fedor\MessageBus\Context\MessageContextFactoryInterface;
 use Fedor\MessageBus\Context\MessageContextInterface;
+use Fedor\MessageBus\Execution\HandlerExecutionStrategyInterface;
 use Fedor\MessageBus\Flow\FlowDefinition;
 use Fedor\MessageBus\Flow\FlowRegistry;
 use Fedor\MessageBus\Interceptor\InterceptorInterface;
@@ -866,6 +867,30 @@ final class RegistryCompiler
                     sourceClass: $flow->key,
                     suggestion: 'Use a MessageContextFactoryInterface implementation.',
                 );
+            }
+
+            if (!class_exists($flow->strategy)) {
+                $diagnostics[] = $this->error(
+                    RegistryDiagnosticCode::FlowInvalid,
+                    sprintf('Flow "%s" strategy "%s" does not exist.', $flow->key, $flow->strategy),
+                    sourceClass: $flow->key,
+                    suggestion: 'Reference an existing execution strategy.',
+                );
+            } else {
+                $strategy = new ReflectionClass($flow->strategy);
+                if (!$strategy->isInstantiable() || !is_a($flow->strategy, HandlerExecutionStrategyInterface::class, true)) {
+                    $diagnostics[] = $this->error(
+                        RegistryDiagnosticCode::FlowInvalid,
+                        sprintf(
+                            'Flow "%s" strategy "%s" must implement %s.',
+                            $flow->key,
+                            $flow->strategy,
+                            HandlerExecutionStrategyInterface::class,
+                        ),
+                        sourceClass: $flow->key,
+                        suggestion: 'Use an instantiable HandlerExecutionStrategyInterface implementation.',
+                    );
+                }
             }
 
             if ($flow->isAsync() && $flow->transport === null) {

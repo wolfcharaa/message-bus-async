@@ -14,6 +14,8 @@ use Fedor\MessageBus\Context\MessageContextInterface;
 use Fedor\MessageBus\Envelope\Envelope;
 use Fedor\MessageBus\Envelope\Headers;
 use Fedor\MessageBus\Execution\ExecutionOptions;
+use Fedor\MessageBus\Execution\QueueExecutionStrategy;
+use Fedor\MessageBus\Execution\SequentialExecutionStrategy;
 use Fedor\MessageBus\Flow\FlowDefinition;
 use Fedor\MessageBus\Flow\FlowRegistry;
 use Fedor\MessageBus\Message\Command;
@@ -71,6 +73,8 @@ final class ContextParityTest extends TestCase
 
         self::assertSame(ContextCustomInterface::class, $restored->contextInterface);
         self::assertSame(ContextCustomFactory::class, $restored->contextFactory);
+        self::assertSame(SequentialExecutionStrategy::class, $restored->strategy);
+        self::assertSame(QueueExecutionStrategy::class, FlowDefinition::async('async')->strategy);
         self::assertNull(FlowDefinition::sync('custom')->context(ContextCustomInterface::class)->contextFactory);
         self::assertSame(
             DefaultMessageContextFactory::class,
@@ -112,6 +116,15 @@ final class ContextParityTest extends TestCase
         self::assertContains(
             RegistryDiagnosticCodes::FLOW_INVALID,
             array_map(static fn ($diagnostic): string => $diagnostic->code, $invalidFactory->diagnostics),
+        );
+
+        $invalidStrategy = $compiler->compileWithDiagnostics(
+            [],
+            new FlowRegistry(FlowDefinition::sync('default')->strategy('MissingExecutionStrategy')),
+        );
+        self::assertContains(
+            RegistryDiagnosticCodes::FLOW_INVALID,
+            array_map(static fn ($diagnostic): string => $diagnostic->code, $invalidStrategy->diagnostics),
         );
     }
 

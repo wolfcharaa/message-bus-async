@@ -29,12 +29,12 @@ final readonly class SequentialExecutionStrategy implements HandlerExecutionStra
             try {
                 $context = $request->contextForBinding($binding);
                 $context->cancellation()->throwIfRequested();
-                $handler = $request->services->resolve($binding->handler);
+                $handler = $request->environment->services->resolve($binding->handler);
                 $interceptors = $this->interceptors($request, $binding);
                 $pipeline = new Pipeline(
                     $context,
                     $interceptors,
-                    fn (): mixed => $request->invoker->invoke(
+                    fn (): mixed => $request->environment->invoker->invoke(
                         $handler,
                         $binding->method,
                         $this->arguments($binding, $context),
@@ -74,7 +74,7 @@ final readonly class SequentialExecutionStrategy implements HandlerExecutionStra
         $interceptors = [];
 
         foreach ($references as $reference) {
-            $interceptor = $request->services->resolve($reference);
+            $interceptor = $request->environment->services->resolve($reference);
             if (!$interceptor instanceof InterceptorInterface) {
                 throw new RuntimeException(sprintf(
                     'Resolved interceptor `%s` must implement %s.',

@@ -7,6 +7,7 @@ namespace Fedor\MessageBus\Execution;
 use Amp\Cancellation;
 use Amp\NullCancellation;
 use Fedor\MessageBus\Envelope\Headers;
+use Fedor\MessageBus\Queue\QueueDeliveryOptions;
 use InvalidArgumentException;
 
 /**
@@ -26,6 +27,7 @@ final readonly class ExecutionOptions
         public Cancellation $cancellation = new NullCancellation(),
         array|Headers $headers = [],
         public ?string $correlationId = null,
+        public ?QueueDeliveryOptions $delivery = null,
     ) {
         if ($this->correlationId !== null && trim($this->correlationId) === '') {
             throw new InvalidArgumentException('Correlation ID must be a non-empty string when provided.');
