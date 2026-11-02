@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Fedor\MessageBus\Tests;
 
+use Amp\DeferredFuture;
 use Fedor\MessageBus\Attribute\CommandHandler;
 use Fedor\MessageBus\Attribute\EventSubscriber;
 use Fedor\MessageBus\Attribute\MessageAlias;
@@ -36,6 +37,9 @@ use Fedor\MessageBus\Service\ServiceScopeFactoryInterface;
 use Fedor\MessageBus\Service\ServiceScopeInterface;
 use PHPUnit\Framework\TestCase;
 use RuntimeException;
+use Throwable;
+
+use function Amp\async;
 
 final class MessageBusRuntimeTest extends TestCase
 {
@@ -155,13 +159,33 @@ final class MessageBusRuntimeTest extends TestCase
         self::assertSame(1, $scopeFactory->disposed);
     }
 
+    public function testParallelFibersKeepRootAndNestedExecutionsInSeparateScopes(): void
+    {
+        $barrier = new RuntimeBarrier(2);
+        $scopeFactory = new ParallelRuntimeScopeFactory($barrier);
+        $bus = self::bus(
+            [RuntimeParallelRootQueryHandler::class, RuntimeParallelNestedQueryHandler::class],
+            new FlowRegistry(),
+            $scopeFactory,
+        );
+
+        $first = async(static fn (): string => $bus->ask(new RuntimeParallelRootQuery()));
+        $second = async(static fn (): string => $bus->ask(new RuntimeParallelRootQuery()));
+        $scopeIds = [$first->await(), $second->await()];
+        sort($scopeIds);
+
+        self::assertSame(['scope-1', 'scope-2'], $scopeIds);
+        self::assertSame(2, $scopeFactory->opened);
+        self::assertSame(2, $scopeFactory->disposed);
+    }
+
     /**
      * @param list<class-string> $classes
      */
     private static function bus(
         array $classes,
         FlowRegistry $flows,
-        RuntimeScopeFactory $scopeFactory,
+        ServiceScopeFactoryInterface $scopeFactory,
     ): MessageBus {
         $definition = (new MessageRegistryCompiler())->compile($classes, $flows);
 
@@ -294,6 +318,44 @@ final readonly class RuntimeAsyncCommand implements Command
 {
 }
 
+/** @implements Query<string> */
+final readonly class RuntimeParallelRootQuery implements Query
+{
+}
+
+/** @implements Query<string> */
+final readonly class RuntimeParallelNestedQuery implements Query
+{
+}
+
+#[QueryHandler(RuntimeParallelRootQuery::class)]
+final readonly class RuntimeParallelRootQueryHandler
+{
+    public function __construct(private RuntimeBarrier $barrier)
+    {
+    }
+
+    public function __invoke(RuntimeParallelRootQuery $query, MessageContextInterface $context): string
+    {
+        $this->barrier->await();
+
+        return $context->ask(new RuntimeParallelNestedQuery());
+    }
+}
+
+#[QueryHandler(RuntimeParallelNestedQuery::class, contextAware: false)]
+final readonly class RuntimeParallelNestedQueryHandler
+{
+    public function __construct(private string $scopeId)
+    {
+    }
+
+    public function __invoke(RuntimeParallelNestedQuery $query): string
+    {
+        return $this->scopeId;
+    }
+}
+
 #[CommandHandler(
     RuntimeAsyncCommand::class,
     flow: 'async',
@@ -364,6 +426,52 @@ final class RuntimeScopeFactory implements ServiceScopeFactoryInterface
     }
 }
 
+final class ParallelRuntimeScopeFactory implements ServiceScopeFactoryInterface
+{
+    public int $opened = 0;
+    public int $disposed = 0;
+
+    public function __construct(private readonly RuntimeBarrier $barrier)
+    {
+    }
+
+    public function openScope(): ServiceScopeInterface
+    {
+        $scopeId = 'scope-' . ++$this->opened;
+
+        return new RuntimeScope([
+            DefaultMessageContextFactory::class => new DefaultMessageContextFactory(),
+            SequentialExecutionStrategy::class => new SequentialExecutionStrategy(),
+            RuntimeParallelRootQueryHandler::class => new RuntimeParallelRootQueryHandler($this->barrier),
+            RuntimeParallelNestedQueryHandler::class => new RuntimeParallelNestedQueryHandler($scopeId),
+        ], function (): void {
+            ++$this->disposed;
+        });
+    }
+}
+
+final class RuntimeBarrier
+{
+    private int $arrived = 0;
+    /** @var DeferredFuture<void> */
+    private readonly DeferredFuture $ready;
+
+    public function __construct(private readonly int $parties)
+    {
+        $this->ready = new DeferredFuture();
+    }
+
+    public function await(): void
+    {
+        ++$this->arrived;
+        if ($this->arrived === $this->parties) {
+            $this->ready->complete();
+        }
+
+        $this->ready->getFuture()->await();
+    }
+}
+
 final class RuntimeScope implements ServiceScopeInterface
 {
     /** @var \Closure(): void */
@@ -397,7 +505,7 @@ final class RuntimeScope implements ServiceScopeInterface
         return $service;
     }
 
-    public function dispose(): void
+    public function dispose(?Throwable $error = null): void
     {
         ($this->onDispose)();
     }

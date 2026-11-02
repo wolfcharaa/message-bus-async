@@ -34,8 +34,14 @@
         "test": "phpunit --do-not-cache-result"
     },
     "minimum-stability": "stable",
+    "suggest": {
+        "psr/container": "Required to use the optional PSR-11 service resolver",
+        "thesis/dic": "Required to use the optional Thesis DIC scope adapter"
+    },
     "require-dev": {
         "phpstan/phpstan": "^2.3",
-        "phpunit/phpunit": "^12.0"
+        "phpunit/phpunit": "^12.0",
+        "psr/container": "^2.0",
+        "thesis/dic": "^0.5.3"
     }
 }
