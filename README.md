@@ -222,7 +222,10 @@ pending cancellation, and cooperative cancellation requests through
 queue schema, while claim, heartbeat, ack/retry/reject, stale recovery, and
 process control remain worker-package responsibilities. See the
 [PostgreSQL queue reference](docs/reference/postgres-queue.md) for state
-transitions, at-least-once semantics, cancellation limits, and schema ownership.
+transitions, at-least-once semantics, cancellation limits, schema ownership, and
+the existing `QueueProviderInterface` seam for a future application-owned
+transactional outbox adapter. Outbox storage and relay contracts are not part of
+core `0.1.0`.
 
 Compiled bindings refer to handlers and interceptors through typed
 `ServiceReference<T>` values. Core resolution is expressed by three neutral

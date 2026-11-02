@@ -47,6 +47,26 @@ application must not blindly retry an enqueue after an unknown connection
 outcome, because the original insert might have committed. Transactional outbox
 and exactly-once external side effects are intentionally outside `0.1.0`.
 
+## Outbox Extension Seam
+
+The core does not define an `OutboxInterface`. `QueueExecutionStrategy` depends
+only on `QueueProviderInterface`, and the value passed to that port is the same
+complete `QueueMessage` used by `PostgresQueueGateway`: stable binding/message
+identity, routing, retry snapshot, availability, and serialized envelope.
+
+An application that later proves a transactional dual-write scenario can
+replace the direct PostgreSQL provider with an adapter that stores this
+`QueueMessage` in its application outbox and returns the outbox record ID as the
+queue message ID. The adapter and its relay own transaction joining, storage
+schema, deduplication, recovery, and delivery observability. No change to
+`MessageBus`, `QueueExecutionStrategy`, or message codecs is required.
+
+This is deliberately an application adapter seam rather than a dormant core
+abstraction. The core does not accept an application transaction object, rely
+on ambient global transaction state, or claim atomicity that the selected
+adapter cannot prove. A contract fixture verifies that an outbox-style provider
+can replace the direct gateway through the existing port.
+
 ## State Machine
 
 The schema and `QueueJobState` preserve the v6 state vocabulary.

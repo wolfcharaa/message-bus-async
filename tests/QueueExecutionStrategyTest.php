@@ -182,6 +182,23 @@ final class QueueExecutionStrategyTest extends TestCase
         self::assertSame([], $provider->messages);
     }
 
+    public function testProviderPortKeepsTransactionalOutboxAsAnExternalAdapter(): void
+    {
+        $provider = new QueueOutboxStyleProvider();
+
+        $result = (new QueueExecutionStrategy())->execute($this->request(
+            [self::binding('queue.outbox', QueueHandler::class)],
+            provider: $provider,
+        ));
+
+        self::assertCount(1, $provider->records);
+        self::assertSame('queue.outbox', $provider->records[0]->bindingId);
+        self::assertSame('{"schemaVersion":1}', $provider->records[0]->envelope->payload);
+        $published = $result->get('queue.outbox');
+        self::assertInstanceOf(PublishedExecution::class, $published);
+        self::assertSame('outbox-1', $published->queueMessageId);
+    }
+
     /**
      * @param non-empty-list<HandlerBinding>|null $bindings
      */
@@ -302,6 +319,20 @@ final class QueueBatchProvider implements BatchQueueProviderInterface
         }
 
         return new QueueBatchEnqueueResult(...$results);
+    }
+}
+
+final class QueueOutboxStyleProvider implements QueueProviderInterface
+{
+    /** @var list<QueueMessage> */
+    public array $records = [];
+
+    public function enqueue(QueueMessage $message, Cancellation $cancellation): QueueEnqueueResult
+    {
+        $cancellation->throwIfRequested();
+        $this->records[] = $message;
+
+        return new QueueEnqueueResult('outbox-' . count($this->records));
     }
 }
 
