@@ -60,8 +60,14 @@ final class MessageRegistryCompiler
         $flows ??= new FlowRegistry();
 
         $compiled = $this->compiler->compileWithDiagnostics($classes, $flows);
-        $diagnostics = array_map($this->translateDiagnostic(...), $compiled->diagnostics);
         $graphContext = $compiled->graphContext;
+        $diagnostics = array_map(
+            fn (InternalRegistryDiagnostic $diagnostic): RegistryDiagnostic => $this->translateDiagnostic(
+                $diagnostic,
+                $graphContext,
+            ),
+            $compiled->diagnostics,
+        );
 
         if ($compiled->registry === null || $this->hasErrorDiagnostics($diagnostics)) {
             return new RegistryCompilationResult(null, $diagnostics, $graphContext);
@@ -119,8 +125,10 @@ final class MessageRegistryCompiler
         );
     }
 
-    private function translateDiagnostic(InternalRegistryDiagnostic $diagnostic): RegistryDiagnostic
-    {
+    private function translateDiagnostic(
+        InternalRegistryDiagnostic $diagnostic,
+        RegistryCompilationGraphContext $graphContext,
+    ): RegistryDiagnostic {
         $originKind = $diagnostic->attribute !== null
             ? RegistryDiagnosticOriginKind::Attribute
             : RegistryDiagnosticOriginKind::ReflectionClass;
@@ -140,12 +148,62 @@ final class MessageRegistryCompiler
             $this->diagnosticCode($diagnostic->code),
             $diagnostic->message,
             $origin,
-            new RegistryDiagnosticTarget(
-                bindingId: $diagnostic->bindingId,
-                handlerClass: $diagnostic->sourceClass,
-                alias: $diagnostic->alias,
-            ),
+            $this->diagnosticTarget($diagnostic, $graphContext),
             $diagnostic->suggestion,
+        );
+    }
+
+    private function diagnosticTarget(
+        InternalRegistryDiagnostic $diagnostic,
+        RegistryCompilationGraphContext $graphContext,
+    ): RegistryDiagnosticTarget {
+        $binding = null;
+        foreach ($graphContext->bindings as $candidate) {
+            if (
+                $candidate->action === $diagnostic->sourceClass
+                && ($diagnostic->bindingId === null || $candidate->bindingId === $diagnostic->bindingId)
+            ) {
+                $binding = $candidate;
+                break;
+            }
+        }
+
+        if ($binding === null && $diagnostic->bindingId !== null) {
+            foreach ($graphContext->bindings as $candidate) {
+                if ($candidate->bindingId === $diagnostic->bindingId) {
+                    $binding = $candidate;
+                    break;
+                }
+            }
+        }
+
+        if ($binding !== null) {
+            return new RegistryDiagnosticTarget(
+                bindingId: $diagnostic->bindingId ?? $binding->bindingId,
+                messageName: $graphContext->messageNames[$binding->message] ?? null,
+                messageClass: $binding->message,
+                handlerClass: $binding->action,
+                method: $binding->method,
+                flow: $binding->flow,
+                alias: $diagnostic->alias,
+            );
+        }
+
+        $messageClass = match ($diagnostic->code) {
+            InternalRegistryDiagnosticCode::MessageAliasDuplicate,
+            InternalRegistryDiagnosticCode::MessageAliasMultiple,
+            InternalRegistryDiagnosticCode::MessageAliasEmpty,
+            InternalRegistryDiagnosticCode::MessageAliasInvalidTarget,
+            InternalRegistryDiagnosticCode::MessageKindAmbiguous => $diagnostic->sourceClass,
+            default => null,
+        };
+
+        return new RegistryDiagnosticTarget(
+            bindingId: $diagnostic->bindingId,
+            messageName: $messageClass === null ? null : ($graphContext->messageNames[$messageClass] ?? null),
+            messageClass: $messageClass,
+            handlerClass: $messageClass === null ? $diagnostic->sourceClass : null,
+            alias: $diagnostic->alias,
         );
     }
 
