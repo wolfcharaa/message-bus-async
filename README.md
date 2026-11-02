@@ -12,8 +12,9 @@ producer-facing durable queue boundary.
 > delta has already been accepted. Flow, identity, delivery, and cardinality
 > semantics, diagnostic contracts, validation rules, registration metadata, and
 > the registry definition/artifact lifecycle have been reconciled. The v6
-> early-exit compilation graph now preserves partial graph context; custom flow
-> context/execution-strategy wiring remains the next parity slice.
+> diagnostic fixture matrix, local execution, and producer queue strategy are
+> covered by target-owned tests. Durable serialization follows the separately
+> accepted explicit-codec contract rather than the v6 reflection serializer.
 
 ## Implemented Contract
 
@@ -44,6 +45,27 @@ ID as correlation ID unless the caller supplies a correlation seed. Every
 nested envelope gets a new message ID, keeps the root correlation ID, and uses
 the parent message ID as causation ID. A durable codec may restore the same IDs
 by constructing an envelope from serialized data.
+
+Durable serialization is explicit and versioned:
+
+- each `MessageCodecInterface` binds one stable alias and message class to a
+  positive current message version;
+- codecs convert messages to and from validated `JsonValue` instances, so PHP
+  objects, resources, non-finite numbers, and malformed object keys cannot enter
+  the persisted payload;
+- `MessageUpcasterInterface` performs one deterministic `N -> N+1` step, and
+  `MessageCodecRegistry` rejects duplicate codecs or a discontinuous chain;
+- `JsonEnvelopeSerializer` stores message alias/version/payload separately from
+  the envelope schema version and preserves message, correlation, causation,
+  and portable header metadata;
+- unknown aliases and unsupported versions fail through typed exceptions; no
+  payload value is treated as a PHP class name.
+
+`MessageCodecRegistryValidationRule` can be included in
+`MessageRegistryCompiler` project rules. It requires every async binding alias
+to have a codec for the same message class; local sync messages do not need a
+durable codec. HTTP presenters remain an application concern and do not reuse
+these codecs.
 
 The application-facing API is segregated by interaction kind:
 
@@ -211,10 +233,11 @@ slice that uses them.
 ## Development State
 
 The repository currently contains public interaction contracts, compile-time
-attributes, deterministic registry compilation, neutral service resolution, and
-the versioned compiled-registry artifact, custom flow contexts, and local
-sequential and queue-producer strategies. The composite bus runtime, concrete
-PostgreSQL producer adapter, and durable codecs are not implemented yet.
+attributes, deterministic registry compilation, neutral service resolution,
+the versioned compiled-registry artifact, custom flow contexts, local sequential
+and queue-producer strategies, and explicit versioned JSON codecs/upcasters.
+The composite bus runtime and concrete PostgreSQL producer adapter are not
+implemented yet.
 
 Run the package quality gates with:
 

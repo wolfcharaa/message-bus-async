@@ -22,6 +22,8 @@ final class RegistryDiagnosticCodes
     public const MESSAGE_KIND_CONFLICT = 'registry.message.kind_conflict';
     public const COMMAND_PRIMARY_MISSING = 'registry.command.primary_missing';
     public const COMMAND_PRIMARY_DUPLICATE = 'registry.command.primary_duplicate';
+    public const CODEC_MISSING = 'registry.codec.missing';
+    public const CODEC_MESSAGE_MISMATCH = 'registry.codec.message_mismatch';
 
     private function __construct()
     {
