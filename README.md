@@ -68,7 +68,10 @@ invocation mode; runtime dispatch will not rediscover it through reflection.
 `MessageContextInterface` is read-only and exposes nested bus capabilities,
 AMPHP cancellation, and the immutable envelope containing
 message/correlation/causation IDs and inherited headers. Handlers never
-construct the context themselves.
+construct the context themselves. `MessageContextFactoryInterface` preserves
+the v6 per-flow context extension point with AMPHP `Cancellation` replacing the
+old worker-control dependency. `DefaultMessageContext` delegates only the three
+public bus capabilities and combines parent and nested cancellation signals.
 
 Registry declarations preserve the attribute model of the previous package:
 
@@ -89,8 +92,9 @@ contract. Queue delivery settings are compiled from the v6 attributes and flows.
 registration provenance across binding serialization.
 
 `FlowDefinition` and `FlowRegistry` preserve the v6 sync/async distinction,
-global middleware chain, transport/queue selection, and delivery defaults. The
-default registry contains one sync `default` flow.
+custom context/factory metadata, global middleware chain, transport/queue
+selection, and delivery defaults. The default registry contains one sync
+`default` flow backed by `DefaultMessageContextFactory`.
 
 `MessageRegistryCompiler` preserves the v6 identity boundary: local sync bindings may
 omit `MessageAlias` and `bindingId`, in which case the binding receives a
@@ -99,10 +103,11 @@ and their messages require `MessageAlias`. A referenced message may be hydrated
 from its handler attribute without being repeated in the explicit class list.
 
 Compilation also validates handler/message kind compatibility, the configured
-method and context mode, query/command/event return semantics, interceptor
-types, query cardinality, and command primary selection. A single command
-handler becomes primary unless it explicitly opts out; multiple command
-handlers require exactly one `primary: true` binding.
+method and flow-specific context mode, context/factory contracts,
+query/command/event return semantics, interceptor types, query cardinality, and
+command primary selection. A single command handler becomes primary unless it
+explicitly opts out; multiple command handlers require exactly one
+`primary: true` binding.
 
 `compileWithDiagnostics()` returns structured diagnostics with origin, target,
 hint, severity, and the last `RegistryCompilationStage`. Core validation is
@@ -141,6 +146,12 @@ Cross-cutting execution reuses the interceptor model:
 The pipeline has no container or registry dependency and cannot execute its
 terminal handler twice. Logging, tracing, cache, validation, and transaction
 behavior are interceptors; no parallel middleware abstraction is introduced.
+
+`SequentialExecutionStrategy` preserves the v6 local execution contract:
+bindings run by descending priority, flow interceptors wrap binding interceptors,
+and fail-fast can be disabled to collect per-binding failures. `ExecutionRequest`
+uses the neutral service resolver and a container-free callable invoker;
+`HandlerExecutionResult` keeps lookup by stable binding ID or action class.
 
 Compiled bindings refer to handlers and interceptors through typed
 `ServiceReference<T>` values. Core resolution is expressed by three neutral
@@ -193,8 +204,9 @@ slice that uses them.
 
 The repository currently contains public interaction contracts, compile-time
 attributes, deterministic registry compilation, neutral service resolution, and
-the versioned compiled-registry artifact. The executable bus runtime and durable
-codecs are not implemented yet.
+the versioned compiled-registry artifact, custom flow contexts, and local
+sequential execution. The composite bus runtime, durable producer strategy, and
+durable codecs are not implemented yet.
 
 Run the package quality gates with:
 

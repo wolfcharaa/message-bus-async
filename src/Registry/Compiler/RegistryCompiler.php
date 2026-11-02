@@ -9,6 +9,9 @@ use Fedor\MessageBus\Attribute\EventSubscriber;
 use Fedor\MessageBus\Attribute\MessageAlias;
 use Fedor\MessageBus\Attribute\MessageHandlerAttributeInterface;
 use Fedor\MessageBus\Attribute\QueryHandler;
+use Fedor\MessageBus\Context\DefaultMessageContext;
+use Fedor\MessageBus\Context\DefaultMessageContextFactory;
+use Fedor\MessageBus\Context\MessageContextFactoryInterface;
 use Fedor\MessageBus\Context\MessageContextInterface;
 use Fedor\MessageBus\Flow\FlowDefinition;
 use Fedor\MessageBus\Flow\FlowRegistry;
@@ -549,7 +552,7 @@ final class RegistryCompiler
                 );
             }
 
-            $this->validateHandlerSignature($binding, $diagnostics);
+            $this->validateHandlerSignature($binding, $flow, $diagnostics);
             $this->validateInterceptors($binding, $diagnostics);
         }
     }
@@ -559,6 +562,7 @@ final class RegistryCompiler
      */
     private function validateHandlerSignature(
         HandlerBindingDefinition $binding,
+        FlowDefinition $flow,
         array &$diagnostics,
     ): void {
         if (!class_exists($binding->action)) {
@@ -633,7 +637,7 @@ final class RegistryCompiler
         if (
             $contextAware
             && isset($parameters[1])
-            && !$this->parameterAccepts($parameters[1]->getType(), MessageContextInterface::class)
+            && !$this->contextParameterAccepts($parameters[1]->getType(), $flow)
         ) {
             $diagnostics[] = $this->errorForMethod(
                 RegistryDiagnosticCode::HandlerSignatureInvalid,
@@ -641,11 +645,11 @@ final class RegistryCompiler
                     'Second argument of "%s::%s" must accept %s.',
                     $handler->getName(),
                     $methodName,
-                    MessageContextInterface::class,
+                    $flow->contextInterface,
                 ),
                 $method,
                 bindingId: $binding->bindingId,
-                suggestion: 'Type the second argument with MessageContextInterface.',
+                suggestion: 'Type the second argument with the configured flow context.',
             );
         }
 
@@ -811,6 +815,59 @@ final class RegistryCompiler
     private function validateFlows(FlowRegistry $flows, array &$diagnostics): void
     {
         foreach ($flows->all() as $flow) {
+            if (!interface_exists($flow->contextInterface) && !class_exists($flow->contextInterface)) {
+                $diagnostics[] = $this->error(
+                    RegistryDiagnosticCode::FlowInvalid,
+                    sprintf('Flow "%s" context "%s" does not exist.', $flow->key, $flow->contextInterface),
+                    sourceClass: $flow->key,
+                    suggestion: 'Reference an existing MessageContextInterface implementation.',
+                );
+
+                continue;
+            }
+
+            if (!is_a($flow->contextInterface, MessageContextInterface::class, true)) {
+                $diagnostics[] = $this->error(
+                    RegistryDiagnosticCode::FlowInvalid,
+                    sprintf(
+                        'Flow "%s" context "%s" must extend %s.',
+                        $flow->key,
+                        $flow->contextInterface,
+                        MessageContextInterface::class,
+                    ),
+                    sourceClass: $flow->key,
+                    suggestion: 'Use a context implementing MessageContextInterface.',
+                );
+            }
+
+            if ($flow->contextFactory === null) {
+                $diagnostics[] = $this->error(
+                    RegistryDiagnosticCode::FlowInvalid,
+                    sprintf('Flow "%s" must declare a context factory.', $flow->key),
+                    sourceClass: $flow->key,
+                    suggestion: 'Set a context factory for custom flow contexts.',
+                );
+            } elseif (!class_exists($flow->contextFactory)) {
+                $diagnostics[] = $this->error(
+                    RegistryDiagnosticCode::FlowInvalid,
+                    sprintf('Flow "%s" context factory "%s" does not exist.', $flow->key, $flow->contextFactory),
+                    sourceClass: $flow->key,
+                    suggestion: 'Reference an existing MessageContextFactoryInterface implementation.',
+                );
+            } elseif (!is_a($flow->contextFactory, MessageContextFactoryInterface::class, true)) {
+                $diagnostics[] = $this->error(
+                    RegistryDiagnosticCode::FlowInvalid,
+                    sprintf(
+                        'Flow "%s" context factory "%s" must implement %s.',
+                        $flow->key,
+                        $flow->contextFactory,
+                        MessageContextFactoryInterface::class,
+                    ),
+                    sourceClass: $flow->key,
+                    suggestion: 'Use a MessageContextFactoryInterface implementation.',
+                );
+            }
+
             if ($flow->isAsync() && $flow->transport === null) {
                 $diagnostics[] = $this->error(
                     RegistryDiagnosticCode::FlowInvalid,
@@ -1001,6 +1058,16 @@ final class RegistryCompiler
         }
 
         return false;
+    }
+
+    private function contextParameterAccepts(?ReflectionType $type, FlowDefinition $flow): bool
+    {
+        if ($this->parameterAccepts($type, $flow->contextInterface)) {
+            return true;
+        }
+
+        return $flow->contextFactory === DefaultMessageContextFactory::class
+            && $this->parameterAccepts($type, DefaultMessageContext::class);
     }
 
     private function isVoidLike(ReflectionType $type): bool

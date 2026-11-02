@@ -5,6 +5,9 @@ declare(strict_types=1);
 namespace Fedor\MessageBus\Flow;
 
 use BackedEnum;
+use Fedor\MessageBus\Context\DefaultMessageContext;
+use Fedor\MessageBus\Context\DefaultMessageContextFactory;
+use Fedor\MessageBus\Context\MessageContextInterface;
 use Fedor\MessageBus\Interceptor\InterceptorInterface;
 use Fedor\MessageBus\Queue\QueueDeliveryOptions;
 
@@ -14,6 +17,8 @@ final readonly class FlowDefinition
     private function __construct(
         public string $key,
         public FlowMode $mode,
+        public string $contextInterface,
+        public ?string $contextFactory,
         public array $middleware,
         public ?TransportDefinition $transport,
         public ?QueueDeliveryOptions $delivery,
@@ -22,18 +27,57 @@ final readonly class FlowDefinition
 
     public static function sync(string|BackedEnum $key): self
     {
-        return new self(self::normalize($key), FlowMode::Sync, [], null, null);
+        return new self(
+            self::normalize($key),
+            FlowMode::Sync,
+            MessageContextInterface::class,
+            DefaultMessageContextFactory::class,
+            [],
+            null,
+            null,
+        );
     }
 
     public static function async(string|BackedEnum $key): self
     {
-        return new self(self::normalize($key), FlowMode::Async, [], null, null);
+        return new self(
+            self::normalize($key),
+            FlowMode::Async,
+            MessageContextInterface::class,
+            DefaultMessageContextFactory::class,
+            [],
+            null,
+            null,
+        );
+    }
+
+    public function context(string $interface, ?string $factory = null): self
+    {
+        return new self(
+            $this->key,
+            $this->mode,
+            $interface,
+            $factory ?? (is_a(DefaultMessageContext::class, $interface, true)
+                ? DefaultMessageContextFactory::class
+                : null),
+            $this->middleware,
+            $this->transport,
+            $this->delivery,
+        );
     }
 
     /** @param class-string ...$middleware */
     public function middleware(string ...$middleware): self
     {
-        return new self($this->key, $this->mode, array_values($middleware), $this->transport, $this->delivery);
+        return new self(
+            $this->key,
+            $this->mode,
+            $this->contextInterface,
+            $this->contextFactory,
+            array_values($middleware),
+            $this->transport,
+            $this->delivery,
+        );
     }
 
     public function transport(string|BackedEnum $transport, string|BackedEnum $queue): self
@@ -41,6 +85,8 @@ final readonly class FlowDefinition
         return new self(
             $this->key,
             $this->mode,
+            $this->contextInterface,
+            $this->contextFactory,
             $this->middleware,
             TransportDefinition::from($transport, $queue),
             $this->delivery,
@@ -49,7 +95,15 @@ final readonly class FlowDefinition
 
     public function delivery(QueueDeliveryOptions $delivery): self
     {
-        return new self($this->key, $this->mode, $this->middleware, $this->transport, $delivery);
+        return new self(
+            $this->key,
+            $this->mode,
+            $this->contextInterface,
+            $this->contextFactory,
+            $this->middleware,
+            $this->transport,
+            $delivery,
+        );
     }
 
     public function isSync(): bool
@@ -66,6 +120,8 @@ final readonly class FlowDefinition
      * @return array{
      *     key: string,
      *     mode: string,
+     *     contextInterface: string,
+     *     contextFactory: ?string,
      *     middleware: list<class-string>,
      *     transport: array{transport: string, queue: string}|null,
      *     delivery: array{priority: ?int, delaySeconds: ?int, retryPolicy: ?string}|null
@@ -76,6 +132,8 @@ final readonly class FlowDefinition
         return [
             'key' => $this->key,
             'mode' => $this->mode->value,
+            'contextInterface' => $this->contextInterface,
+            'contextFactory' => $this->contextFactory,
             'middleware' => $this->middleware,
             'transport' => $this->transport?->toArray(),
             'delivery' => $this->delivery?->toArray(),
@@ -87,8 +145,15 @@ final readonly class FlowDefinition
     {
         $key = $data['key'] ?? null;
         $mode = $data['mode'] ?? null;
-        if (!is_string($key) || !is_string($mode)) {
-            throw new \InvalidArgumentException('Flow key and mode must be strings.');
+        $contextInterface = $data['contextInterface'] ?? null;
+        $contextFactory = $data['contextFactory'] ?? null;
+        if (
+            !is_string($key)
+            || !is_string($mode)
+            || !is_string($contextInterface)
+            || ($contextFactory !== null && !is_string($contextFactory))
+        ) {
+            throw new \InvalidArgumentException('Flow key, mode, and context metadata must have valid types.');
         }
 
         $rawMiddleware = $data['middleware'] ?? [];
@@ -111,6 +176,8 @@ final readonly class FlowDefinition
         return new self(
             $key,
             FlowMode::from($mode),
+            $contextInterface,
+            $contextFactory,
             $middleware,
             $transport,
             $delivery,
