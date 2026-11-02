@@ -79,6 +79,19 @@ The application-facing API is segregated by interaction kind:
 execution. Application services should depend on the narrowest interface they
 use.
 
+The concrete `MessageBus` is the orchestration root. Every public
+`ask()`/`dispatch()`/`publish()` call opens one `ServiceScopeInterface` and
+disposes it in `finally`. A context receives a per-execution `NestedMessageBus`
+facade, so nested calls reuse the same scope while `EnvelopeFactory` creates a
+new message ID, preserves correlation, records causation, and merges headers.
+No fiber-local mutable state or resolver is exposed through the context.
+
+Queries execute their single sync binding and return its typed result. Commands
+execute the primary sync binding and all async bindings, which also supports an
+async-only command. Event publication executes every local and queued subscriber
+and returns one aggregate `PublishResult`; failures retain successful siblings
+inside `PublishFailed`.
+
 Handlers are invokable objects with one of two supported shapes:
 
 - `__invoke(Message $message): TResult|void` for a contextless handler;
@@ -233,11 +246,11 @@ slice that uses them.
 ## Development State
 
 The repository currently contains public interaction contracts, compile-time
-attributes, deterministic registry compilation, neutral service resolution,
-the versioned compiled-registry artifact, custom flow contexts, local sequential
-and queue-producer strategies, and explicit versioned JSON codecs/upcasters.
-The composite bus runtime and concrete PostgreSQL producer adapter are not
-implemented yet.
+attributes, deterministic registry compilation, neutral scoped resolution, the
+versioned compiled-registry artifact, custom flow contexts, local sequential and
+queue-producer strategies, explicit versioned JSON codecs/upcasters, and the
+composite bus runtime with nested causation and aggregate fan-out. The concrete
+PostgreSQL producer and Thesis DIC integration adapter are not implemented yet.
 
 Run the package quality gates with:
 
