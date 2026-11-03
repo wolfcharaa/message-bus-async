@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Fedor\MessageBus;
 
+use Amp\Cancellation;
 use Fedor\MessageBus\Clock\SystemClock;
 use Fedor\MessageBus\Context\MessageContextFactoryInterface;
 use Fedor\MessageBus\Context\MessageContextInterface;
@@ -14,6 +15,7 @@ use Fedor\MessageBus\Envelope\EnvelopeSerializerInterface;
 use Fedor\MessageBus\Execution\ExecutionEnvironment;
 use Fedor\MessageBus\Execution\ExecutionOptions;
 use Fedor\MessageBus\Execution\ExecutionRequest;
+use Fedor\MessageBus\Execution\BindingEnvelopeExecutorInterface;
 use Fedor\MessageBus\Execution\HandlerExecutionResult;
 use Fedor\MessageBus\Execution\HandlerExecutionResultInterface;
 use Fedor\MessageBus\Execution\HandlerExecutionStrategyInterface;
@@ -40,6 +42,7 @@ use Fedor\MessageBus\Registry\HandlerBinding;
 use Fedor\MessageBus\Registry\HandlerInvocationMode;
 use Fedor\MessageBus\Registry\HandlerKind;
 use Fedor\MessageBus\Service\ServiceReference;
+use Fedor\MessageBus\Service\ServiceResolverInterface;
 use Fedor\MessageBus\Service\ServiceScopeFactoryInterface;
 use Fedor\MessageBus\Service\ServiceScopeInterface;
 use Fedor\MessageBus\Service\ServiceScopeRunner;
@@ -47,7 +50,7 @@ use Psr\Clock\ClockInterface;
 use RuntimeException;
 use Throwable;
 
-final class MessageBus implements MessageBusInterface
+final class MessageBus implements MessageBusInterface, BindingEnvelopeExecutorInterface
 {
     private readonly ServiceScopeRunner $scopeRunner;
     private readonly EnvelopeFactory $envelopeFactory;
@@ -95,6 +98,36 @@ final class MessageBus implements MessageBusInterface
         );
     }
 
+    #[\Override]
+    public function executeEnvelopeToBinding(
+        Envelope $envelope,
+        ServiceResolverInterface $services,
+        Cancellation $cancellation,
+    ): mixed {
+        $bindingId = $envelope->bindingId ?? throw new RuntimeException(
+            'Envelope bindingId is required for worker execution.',
+        );
+        $binding = $this->registry->binding($bindingId);
+        if (!$envelope->message instanceof $binding->message) {
+            throw new RuntimeException(sprintf(
+                'Binding `%s` expects message `%s`, got `%s`.',
+                $bindingId,
+                $binding->message,
+                $envelope->message::class,
+            ));
+        }
+
+        $result = $this->executeBindings(
+            [$binding],
+            $envelope->forBinding($bindingId),
+            new ExecutionOptions($cancellation),
+            $services,
+            forceSequential: true,
+        );
+
+        return $result->get($bindingId);
+    }
+
     /**
      * @param Query<mixed> $query
      * @return mixed
@@ -102,7 +135,7 @@ final class MessageBus implements MessageBusInterface
     private function askInScope(
         Query $query,
         ?ExecutionOptions $options,
-        ServiceScopeInterface $scope,
+        ServiceResolverInterface $scope,
         ?Envelope $parent = null,
     ): mixed {
         $bindings = array_values(array_filter(
@@ -128,7 +161,7 @@ final class MessageBus implements MessageBusInterface
     private function dispatchInScope(
         Command $command,
         ?ExecutionOptions $options,
-        ServiceScopeInterface $scope,
+        ServiceResolverInterface $scope,
         ?Envelope $parent = null,
     ): void {
         $commandBindings = array_values(array_filter(
@@ -169,7 +202,7 @@ final class MessageBus implements MessageBusInterface
     private function publishInScope(
         Event $event,
         ?ExecutionOptions $options,
-        ServiceScopeInterface $scope,
+        ServiceResolverInterface $scope,
         ?Envelope $parent = null,
     ): PublishResult {
         $bindings = array_values(array_filter(
@@ -193,12 +226,13 @@ final class MessageBus implements MessageBusInterface
         array $bindings,
         Envelope $envelope,
         ExecutionOptions $options,
-        ServiceScopeInterface $scope,
+        ServiceResolverInterface $scope,
+        bool $forceSequential = false,
     ): HandlerExecutionResultInterface {
         $result = new HandlerExecutionResult();
         foreach ($this->groupByFlow($bindings) as $flowKey => $flowBindings) {
             $flow = $this->registry->compiled()->flows->get($flowKey);
-            if ($this->canExecuteDirectly($flow, $flowBindings)) {
+            if ($this->canExecuteDirectly($flow, $flowBindings, $forceSequential)) {
                 $flowResult = $this->executeDirectly($flowBindings, $envelope, $options, $scope);
             } else {
                 /** @var array<string, MessageContextInterface> $contexts */
@@ -218,7 +252,9 @@ final class MessageBus implements MessageBusInterface
                     );
                 };
                 $context = $contextForBinding($flowBindings[0]);
-                $strategy = $this->strategy($flow->strategy, $scope);
+                $strategy = $forceSequential
+                    ? new SequentialExecutionStrategy()
+                    : $this->strategy($flow->strategy, $scope);
                 $flowResult = $strategy->execute(new ExecutionRequest(
                     $flowBindings,
                     $context,
@@ -240,7 +276,7 @@ final class MessageBus implements MessageBusInterface
         array $bindings,
         Envelope $envelope,
         ExecutionOptions $options,
-        ServiceScopeInterface $scope,
+        ServiceResolverInterface $scope,
     ): HandlerExecutionResultInterface {
         $results = [];
         foreach ($this->sortBindingsByPriority($bindings) as $binding) {
@@ -257,9 +293,16 @@ final class MessageBus implements MessageBusInterface
     }
 
     /** @param non-empty-list<HandlerBinding> $bindings */
-    private function canExecuteDirectly(FlowDefinition $flow, array $bindings): bool
+    private function canExecuteDirectly(
+        FlowDefinition $flow,
+        array $bindings,
+        bool $forceSequential = false,
+    ): bool
     {
-        if ($flow->strategy !== SequentialExecutionStrategy::class || $flow->middleware !== []) {
+        if (
+            (!$forceSequential && $flow->strategy !== SequentialExecutionStrategy::class)
+            || $flow->middleware !== []
+        ) {
             return false;
         }
 
@@ -293,7 +336,7 @@ final class MessageBus implements MessageBusInterface
         array $bindings,
         Envelope $envelope,
         ExecutionOptions $options,
-        ServiceScopeInterface $scope,
+        ServiceResolverInterface $scope,
     ): PublishResult {
         $executions = [];
         $failures = [];
@@ -373,7 +416,7 @@ final class MessageBus implements MessageBusInterface
         FlowDefinition $flow,
         Envelope $envelope,
         ExecutionOptions $options,
-        ServiceScopeInterface $scope,
+        ServiceResolverInterface $scope,
     ): MessageContextInterface {
         $factoryId = $flow->contextFactory ?? throw new RuntimeException(sprintf(
             'Flow `%s` has no context factory.',
@@ -411,12 +454,15 @@ final class MessageBus implements MessageBusInterface
         return $context;
     }
 
-    private function strategy(string $strategyId, ServiceScopeInterface $scope): HandlerExecutionStrategyInterface
+    private function strategy(
+        string $strategyId,
+        ServiceResolverInterface $scope,
+    ): HandlerExecutionStrategyInterface
     {
         return $scope->resolve(new ServiceReference($strategyId, HandlerExecutionStrategyInterface::class));
     }
 
-    private function environment(ServiceScopeInterface $scope): ExecutionEnvironment
+    private function environment(ServiceResolverInterface $scope): ExecutionEnvironment
     {
         return new ExecutionEnvironment(
             $scope,

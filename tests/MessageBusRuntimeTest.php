@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Fedor\MessageBus\Tests;
 
 use Amp\DeferredFuture;
+use Amp\NullCancellation;
 use Fedor\MessageBus\Attribute\CommandHandler;
 use Fedor\MessageBus\Attribute\EventSubscriber;
 use Fedor\MessageBus\Attribute\MessageAlias;
@@ -14,6 +15,7 @@ use Fedor\MessageBus\Context\MessageContextInterface;
 use Fedor\MessageBus\Envelope\Envelope;
 use Fedor\MessageBus\Envelope\EnvelopeFactory;
 use Fedor\MessageBus\Execution\ExecutionOptions;
+use Fedor\MessageBus\Execution\BindingEnvelopeExecutorInterface;
 use Fedor\MessageBus\Execution\ExecutionRequest;
 use Fedor\MessageBus\Execution\HandlerExecutionResult;
 use Fedor\MessageBus\Execution\HandlerExecutionResultInterface;
@@ -88,7 +90,7 @@ final class MessageBusRuntimeTest extends TestCase
             SequentialExecutionStrategy::class => new SequentialExecutionStrategy(),
             RuntimeQueuedStrategy::class => $queued,
             RuntimeLocalEventHandler::class => new RuntimeLocalEventHandler($trace),
-            RuntimeQueuedEventHandler::class => new RuntimeQueuedEventHandler(),
+            RuntimeQueuedEventHandler::class => new RuntimeQueuedEventHandler($trace),
         ]);
         $bus = self::bus(
             [RuntimeLocalEventHandler::class, RuntimeQueuedEventHandler::class],
@@ -110,6 +112,48 @@ final class MessageBusRuntimeTest extends TestCase
         self::assertSame('message-1', $result->executions()[1]->messageId);
         self::assertSame(1, $trace->localEvents);
         self::assertSame(1, $queued->executions);
+        self::assertSame(1, $scopeFactory->opened);
+        self::assertSame(1, $scopeFactory->disposed);
+    }
+
+    public function testBindingEnvelopeExecutorRunsExactQueuedBindingInsideProvidedScope(): void
+    {
+        $trace = new RuntimeTrace();
+        $queued = new RuntimeQueuedStrategy();
+        $scopeFactory = new RuntimeScopeFactory([
+            DefaultMessageContextFactory::class => new DefaultMessageContextFactory(),
+            RuntimeQueuedStrategy::class => $queued,
+            RuntimeLocalEventHandler::class => new RuntimeLocalEventHandler($trace),
+            RuntimeQueuedEventHandler::class => new RuntimeQueuedEventHandler($trace),
+        ]);
+        $bus = self::bus(
+            [RuntimeLocalEventHandler::class, RuntimeQueuedEventHandler::class],
+            self::flows(),
+            $scopeFactory,
+        );
+        self::assertInstanceOf(BindingEnvelopeExecutorInterface::class, $bus);
+        $scope = $scopeFactory->openScope();
+
+        try {
+            $result = $bus->executeEnvelopeToBinding(
+                new Envelope(
+                    new RuntimePublishedEvent(),
+                    'message-queued',
+                    'correlation-queued',
+                    null,
+                    bindingId: 'runtime.published.queued',
+                ),
+                $scope,
+                new NullCancellation(),
+            );
+        } finally {
+            $scope->dispose();
+        }
+
+        self::assertNull($result);
+        self::assertSame(0, $trace->localEvents);
+        self::assertSame(1, $trace->queuedEvents);
+        self::assertSame(0, $queued->executions);
         self::assertSame(1, $scopeFactory->opened);
         self::assertSame(1, $scopeFactory->disposed);
     }
@@ -218,6 +262,7 @@ final class RuntimeTrace
     public ?Envelope $nestedEnvelope = null;
     public ?string $nestedResult = null;
     public int $localEvents = 0;
+    public int $queuedEvents = 0;
 }
 
 final readonly class RuntimeRootCommand implements Command
@@ -285,10 +330,15 @@ final readonly class RuntimeLocalEventHandler
     bindingId: 'runtime.published.queued',
     contextAware: false,
 )]
-final class RuntimeQueuedEventHandler
+final readonly class RuntimeQueuedEventHandler
 {
+    public function __construct(private RuntimeTrace $trace)
+    {
+    }
+
     public function __invoke(RuntimePublishedEvent $event): void
     {
+        ++$this->trace->queuedEvents;
     }
 }
 
