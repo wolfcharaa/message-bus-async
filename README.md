@@ -3,8 +3,9 @@
 Async-first PHP message bus package with a typed local execution lane and a
 producer-facing durable queue boundary.
 
-> Status: pre-release `0.1.0`. Public interaction contracts are available, but
-> the bus implementation is not ready for application use.
+> Status: pre-release `0.1.0`. Local dispatch, durable producer/status/control,
+> and scoped exact-binding worker execution are implemented; release packaging
+> and application integration are still in progress.
 
 > Migration policy: `romanfedorskij/message-bus` v6.2.3 is the behavioral
 > baseline. Existing registry, flow, diagnostics, envelope, and queue semantics
@@ -212,6 +213,15 @@ and fail-fast can be disabled to collect per-binding failures. `ExecutionRequest
 uses the neutral service resolver and a container-free callable invoker;
 `HandlerExecutionResult` keeps lookup by stable binding ID or action class.
 
+`BindingEnvelopeExecutorInterface` is the advanced worker execution contract.
+The concrete `MessageBus` implements it through
+`executeEnvelopeToBinding()`: the caller supplies the already-opened job
+`ServiceResolverInterface`, restored envelope, and AMPHP cancellation. The bus
+requires an envelope binding ID, validates its message type, and forces that one
+binding through the local sequential pipeline even when its flow normally uses
+`QueueExecutionStrategy`. This prevents a consumed job from being enqueued
+again and keeps nested dispatch inside the same job scope.
+
 `QueueExecutionStrategy` preserves the producer side of the v6 async contract:
 flow, binding, and execution delivery options are merged; retry policies are
 snapshotted into each `QueueMessage`; and single or batch enqueue failures are
@@ -266,9 +276,12 @@ The core package will own:
 - versioned JSON codecs and upcasters;
 - durable publish, status, cancellation, retry, and queue schema contracts;
 - the AMPHP PostgreSQL producer/status/cancel gateway.
+- the neutral scoped exact-binding execution contract used by the worker
+  extension.
 
-Worker execution, heartbeat, stale recovery, process control, and worker CLI
-belong to the optional `romanfedorskij/message-bus-async-worker` package.
+Envelope deserialization adapters, queue consumption, heartbeat, stale
+recovery, process control, and worker CLI belong to the optional
+`romanfedorskij/message-bus-async-worker` package.
 
 The core will not require a DI container or Symfony Console. Container-specific
 resolution and lifecycle behavior will be connected through adapters.
