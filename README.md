@@ -260,6 +260,26 @@ handle to the bus scope contract. Each root execution owns a fresh Thesis scope;
 parallel fibers remain isolated, nested dispatch reuses the same resolver, and
 the execution failure reaches Thesis disposers before teardown completes.
 
+The optional `MessageBusModule` provides the standard Thesis DIC composition.
+Pass the compiled registry and the application-owned service refs keyed by the
+IDs stored in the registry, then import the module from the application root:
+
+```php
+use Fedor\MessageBus\Integration\Thesis\MessageBusModule;
+
+$handler = $dic->object(FindAddressHandler::class)->canBeScoped();
+return $dic->import(new MessageBusModule(
+    registry: $dic->value($compiledRegistry),
+    services: [FindAddressHandler::class => $handler],
+));
+```
+
+Install `thesis/dic` in the application to use this integration. It remains a
+Composer suggestion rather than a required runtime dependency. Applications
+that own a decorated or otherwise custom scope can pass `scopeFactory` instead
+of `services`; the registry, handlers, codecs, transports, and other integration
+adapters remain application-owned.
+
 Event publication reports every matched binding as a local or queued
 `PublishedExecution`. A partial failure throws `PublishFailed`; the exception
 retains the partial `PublishResult`, including successful executions and
