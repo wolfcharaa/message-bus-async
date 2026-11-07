@@ -1,350 +1,137 @@
 # Message Bus Async
 
-Async-first PHP message bus package with a typed local execution lane and a
-producer-facing durable queue boundary.
+Async-first message bus for PHP 8.4 with typed query, command, and event APIs,
+an explicit compiled registry, deterministic execution scopes, and a durable
+PostgreSQL producer boundary built on AMPHP.
 
-> Status: pre-release `0.1.0`. Local dispatch, durable producer/status/control,
-> and scoped exact-binding worker execution are implemented; release packaging
-> and application integration are still in progress.
+The first stable package line is `0.1.x`. It is a clean-slate successor to
+`romanfedorskij/message-bus` v6, not a drop-in upgrade: applications must build
+an explicit registry and choose their service-scope and queue adapters.
 
-> Migration policy: `romanfedorskij/message-bus` v6.2.3 is the behavioral
-> baseline. Existing registry, flow, diagnostics, envelope, and queue semantics
-> are ported from its source and tests unless an AMPHP/lifecycle/package-split
-> delta has already been accepted. Flow, identity, delivery, and cardinality
-> semantics, diagnostic contracts, validation rules, registration metadata, and
-> the registry definition/artifact lifecycle have been reconciled. The v6
-> diagnostic fixture matrix, local execution, and producer queue strategy are
-> covered by target-owned tests. Durable serialization follows the separately
-> accepted explicit-codec contract rather than the v6 reflection serializer.
+## What It Provides
 
-## Implemented Contract
-
-Messages explicitly declare their interaction kind:
-
-| Marker | Semantics |
+| Capability | Public entry point |
 | --- | --- |
-| `Fedor\MessageBus\Message\Query<TResult>` | One result-bearing interaction; `TResult` is a static-analysis generic |
-| `Fedor\MessageBus\Message\Command` | One state-changing interaction without an application result |
-| `Fedor\MessageBus\Message\Event` | A notification that may have multiple subscribers |
+| Typed request/reply | `QueryBusInterface::ask()` |
+| State-changing local or queued work | `CommandBusInterface::dispatch()` |
+| Local and queued fan-out | `EventPublisherInterface::publish()` |
+| Compile-time handler validation | `MessageRegistryCompiler` |
+| Nested correlation and cancellation | `MessageContextInterface` |
+| Scoped service resolution | `ServiceScopeFactoryInterface` |
+| Versioned durable payloads | `MessageCodecRegistry` and `JsonEnvelopeSerializer` |
+| PostgreSQL enqueue/status/cancel | `PostgresQueueGateway` |
 
-Marker implementations are expected to be immutable data objects. Aliases,
-versions, transport metadata, container references, and execution behavior do
-not belong to the message marker contract.
+Queue consumption, heartbeat, stale recovery, process control, and the worker
+CLI live in
+[`romanfedorskij/message-bus-async-worker`](https://github.com/wolfcharaa/message-bus-async-worker).
 
-Root execution settings are carried by immutable
-`Fedor\MessageBus\Execution\ExecutionOptions`. It accepts an AMPHP
-`Cancellation`, portable initial `Headers`, and an optional external correlation
-seed. The bus implementation will create the internal context and propagate
-those values to nested executions; callers will not construct or mutate that
-context. Each handler context receives its stable binding ID, while the durable
-envelope preserves the original `createdAt` timestamp across replay. Deadlines
-are expressed with AMPHP `TimeoutCancellation` instead of a second timeout
-abstraction.
+## Requirements
 
-The library owns immutable envelope identity. A replaceable
-`MessageIdGeneratorInterface` creates opaque message IDs; the built-in random
-generator uses 128 bits from `random_bytes()`. A root envelope uses its message
-ID as correlation ID unless the caller supplies a correlation seed. Every
-nested envelope gets a new message ID, keeps the root correlation ID, and uses
-the parent message ID as causation ID. A durable codec may restore the same IDs
-by constructing an envelope from serialized data.
+- PHP `8.4.12` or newer within the PHP 8 line;
+- `ext-json`;
+- `ext-pgsql` or `ext-pq` when using the PostgreSQL gateway;
+- AMPHP 3 and `amphp/postgres` 2.
 
-Durable serialization is explicit and versioned:
+Thesis DIC and PSR-11 integrations are optional. The core does not expose a
+container through message contexts and does not require Symfony Console.
 
-- each `MessageCodecInterface` binds one stable alias and message class to a
-  positive current message version;
-- codecs convert messages to and from validated `JsonValue` instances, so PHP
-  objects, resources, non-finite numbers, and malformed object keys cannot enter
-  the persisted payload;
-- `MessageUpcasterInterface` performs one deterministic `N -> N+1` step, and
-  `MessageCodecRegistry` rejects duplicate codecs or a discontinuous chain;
-- `JsonEnvelopeSerializer` stores message alias/version/payload separately from
-  the envelope schema version and preserves message, correlation, causation,
-  and portable header metadata;
-- unknown aliases and unsupported versions fail through typed exceptions; no
-  payload value is treated as a PHP class name.
+## Installation
 
-`MessageCodecRegistryValidationRule` can be included in
-`MessageRegistryCompiler` project rules. It requires every async binding alias
-to have a codec for the same message class; local sync messages do not need a
-durable codec. HTTP presenters remain an application concern and do not reuse
-these codecs.
+The source release is available from GitHub. Until the package is registered
+in Packagist, add the VCS repository explicitly:
 
-The application-facing API is segregated by interaction kind:
-
-| Interface | Method | Result |
-| --- | --- | --- |
-| `QueryBusInterface` | `ask(Query<TResult>, ?ExecutionOptions)` | `TResult` |
-| `CommandBusInterface` | `dispatch(Command, ?ExecutionOptions)` | `void` |
-| `EventPublisherInterface` | `publish(Event, ?ExecutionOptions)` | `PublishResult` |
-
-`MessageBusInterface` is the composite facade for composition and nested
-execution. Application services should depend on the narrowest interface they
-use.
-
-The concrete `MessageBus` is the orchestration root. Every public
-`ask()`/`dispatch()`/`publish()` call opens one `ServiceScopeInterface` and
-disposes it in `finally`. A context receives a per-execution `NestedMessageBus`
-facade, so nested calls reuse the same scope while `EnvelopeFactory` creates a
-new message ID, preserves correlation, records causation, and merges headers.
-No fiber-local mutable state or resolver is exposed through the context.
-
-Queries execute their single sync binding and return its typed result. Commands
-execute the primary sync binding and all async bindings, which also supports an
-async-only command. Event publication executes every local and queued subscriber
-and returns one aggregate `PublishResult`; failures retain successful siblings
-inside `PublishFailed`.
-
-A contextless sync binding on the sequential strategy executes directly when
-neither its flow nor the binding declares interceptors. This preserves the v6
-contract: the handler receives only the message, bindings keep descending
-priority order, and the runtime does not resolve a context factory merely to
-discard its context. As soon as an interceptor is present, the normal context
-and pipeline path is used.
-
-Handlers are invokable objects with one of two supported shapes:
-
-- `__invoke(Message $message): TResult|void` for a contextless handler;
-- `__invoke(Message $message, MessageContextInterface $context): TResult|void`
-  when nested execution or metadata is required.
-
-The registry compiler will validate the chosen signature once and store its
-invocation mode; runtime dispatch will not rediscover it through reflection.
-`MessageContextInterface` is read-only and exposes nested bus capabilities,
-AMPHP cancellation, and the immutable envelope containing
-message/correlation/causation IDs and inherited headers. Handlers never
-construct the context themselves. `MessageContextFactoryInterface` preserves
-the v6 per-flow context extension point with AMPHP `Cancellation` replacing the
-old worker-control dependency. `DefaultMessageContext` delegates only the three
-public bus capabilities and combines parent and nested cancellation signals.
-
-Registry declarations preserve the attribute model of the previous package:
-
-- `MessageAlias` assigns a stable external name to a message class;
-- `QueryHandler`, `CommandHandler`, and `EventSubscriber` describe repeatable
-  handler bindings on action classes;
-- handler attributes retain the v6 `middleware` argument for interceptor classes
-  and declare flow, method, priority, optional binding ID, and context mode;
-- `CommandHandler` additionally declares the optional primary binding marker;
-- command/event attributes retain delay and retry-policy delivery overrides.
-
-The attributes also retain the v6 `ownerKind`, `ownerId`, and optional
-`source*` provenance fields. They are required when a project flow contract
-must prove that a binding and its policy belong to the same package or feature.
-
-Attributes are compile-time metadata only. The compiler receives an
-explicit list of message and handler classes, inspects only those classes, and
-produces a compiled registry definition. Composer namespace traversal,
-filesystem discovery, and reflection-based runtime scanning are not part of the
-contract. Queue delivery settings are compiled from the v6 attributes and flows.
-`RegistryOwner`, `RegistrySource`, and `BindingRegistrationContext` preserve
-registration provenance across binding serialization.
-
-`FlowDefinition` and `FlowRegistry` preserve the v6 sync/async distinction,
-custom context/factory metadata, global middleware chain, transport/queue
-selection, and delivery defaults. The default registry contains one sync
-`default` flow backed by `DefaultMessageContextFactory`.
-
-`MessageRegistryCompiler` preserves the v6 identity boundary: local sync bindings may
-omit `MessageAlias` and `bindingId`, in which case the binding receives a
-deterministic `auto.*` ID. Async bindings require an explicit stable binding ID,
-and their messages require `MessageAlias`. A referenced message may be hydrated
-from its handler attribute without being repeated in the explicit class list.
-
-Compilation also validates handler/message kind compatibility, the configured
-method and flow-specific context mode, context/factory contracts,
-query/command/event return semantics, interceptor types, query cardinality, and
-command primary selection. A single command handler becomes primary unless it
-explicitly opts out; multiple command handlers require exactly one
-`primary: true` binding.
-
-`compileWithDiagnostics()` returns structured diagnostics with origin, target,
-hint, severity, and the last `RegistryCompilationStage`. Core validation is
-followed by project `RegistryValidationRuleInterface` rules; warnings can be
-promoted to strict compilation failure through `MessageRegistryCompilerOptions`.
-An error result never contains a definition. `compile()` throws a typed
-`RegistryCompilationException` that retains all diagnostics. Discovery, alias
-hydration, binding normalization, core validation, project rules, and definition
-building are separate early-exit stages with partial `HandlerBindingDefinition`
-graphs available to diagnostics tooling.
-
-`MessageRegistryDefinition` preserves the v6 schema metadata: schema and library
-versions, generation time, source hash, flows, message-to-binding index,
-bindings, aliases, and reverse message names. Compile-time bindings retain the
-v6 nullable normalization state; hydrated runtime bindings use typed handler and
-interceptor `ServiceReference` values as the accepted lifecycle adaptation.
-
-`SymfonyVarExporterRegistryDumper` writes the definition as a PHP file returning
-scalar arrays, and `CompiledRegistryFileWriter` replaces the target atomically.
-`CompiledMessageRegistry::fromFile()` hydrates the definition. The v6
-`RegistryRuntimeLoader` prefers a supplied compiled file and can either compile
-the explicit class list when it is absent or enforce build-only artifacts with
-`requireCompiled: true`. Dispatch never performs discovery after loading.
-Because loading uses PHP `require`, compiled registries must be trusted build
-outputs.
-
-Cross-cutting execution reuses the interceptor model:
-
-- `InterceptorInterface` wraps a context and `PipelineInterface<TResult>`;
-- an interceptor may run logic before and after `continue()`, transform the
-  result, short-circuit execution, or rethrow a failure;
-- registry compilation determines the ordered interceptor chain for a binding;
-- the concrete `Pipeline<TResult>` is created per execution from resolved
-  interceptor instances and a terminal handler callable.
-
-The pipeline has no container or registry dependency and cannot execute its
-terminal handler twice. Logging, tracing, cache, validation, and transaction
-behavior are interceptors; no parallel middleware abstraction is introduced.
-
-Handler idempotency preserves the proven v6 interceptor model. A policy extracts
-a normalized key, fingerprints the message intent, and asks an
-`IdempotencyStoreInterface` for one of four decisions: claimed, completed with
-the same intent, already in progress, or conflict. Claimed work runs the handler
-and records completion; a completed replay is a no-op; in-progress is retryable;
-and conflict is non-retryable. A flow contract can require a stable binding ID,
-matching owner metadata, the idempotency interceptor role, command/event kinds,
-and transaction-before-idempotency ordering. This does not add producer-side
-enqueue deduplication: deterministic queue keys remain a separate transport
-enhancement. See the [idempotency reference](docs/reference/idempotency.md).
-
-`SequentialExecutionStrategy` preserves the v6 local execution contract:
-bindings run by descending priority, flow interceptors wrap binding interceptors,
-and fail-fast can be disabled to collect per-binding failures. `ExecutionRequest`
-uses the neutral service resolver and a container-free callable invoker;
-`HandlerExecutionResult` keeps lookup by stable binding ID or action class.
-
-`BindingEnvelopeExecutorInterface` is the advanced worker execution contract.
-The concrete `MessageBus` implements it through
-`executeEnvelopeToBinding()`: the caller supplies the already-opened job
-`ServiceResolverInterface`, restored envelope, and AMPHP cancellation. The bus
-requires an envelope binding ID, validates its message type, and forces that one
-binding through the local sequential pipeline even when its flow normally uses
-`QueueExecutionStrategy`. This prevents a consumed job from being enqueued
-again and keeps nested dispatch inside the same job scope.
-
-`QueueExecutionStrategy` preserves the producer side of the v6 async contract:
-flow, binding, and execution delivery options are merged; retry policies are
-snapshotted into each `QueueMessage`; and single or batch enqueue failures are
-reported per binding. Queue providers receive the AMPHP cancellation directly.
-`PostgresQueueGateway` implements enqueue, atomic batch enqueue, status polling,
-pending cancellation, and cooperative cancellation requests through
-`amphp/postgres`; no PDO path exists in the package. The core owns the shared
-queue schema, while claim, heartbeat, ack/retry/reject, stale recovery, and
-process control remain worker-package responsibilities. See the
-[PostgreSQL queue reference](docs/reference/postgres-queue.md) for state
-transitions, at-least-once semantics, cancellation limits, schema ownership, and
-the existing `QueueProviderInterface` seam for a future application-owned
-transactional outbox adapter. Outbox storage and relay contracts are not part of
-core `0.1.0`.
-
-Compiled bindings refer to handlers and interceptors through typed
-`ServiceReference<T>` values. Core resolution is expressed by three neutral
-contracts:
-
-- `ServiceResolverInterface` resolves a typed reference;
-- `ServiceScopeInterface` adds deterministic disposal;
-- `ServiceScopeFactoryInterface` opens a scope for a root execution.
-
-`ServiceScopeRunner` guarantees disposal in `finally`, including when execution
-fails. Nested executions reuse the current scope. A DI integration adapts its
-native scoped providers to these contracts; the core package does not require
-Thesis DIC or PSR-11. The resolver is infrastructure for the bus and is never
-exposed through `MessageContextInterface` as a service locator.
-
-Optional adapters are available without making either container a runtime
-dependency of the core package. `PsrContainerServiceResolver` validates PSR-11
-entries against the compiled `ServiceReference` type. For Thesis DIC,
-`ThesisServiceResolver` accepts provider closures created by `Dic::provider()`,
-while `ThesisServiceScopeFactory` adapts a `Scoped<ServiceResolverInterface>`
-handle to the bus scope contract. Each root execution owns a fresh Thesis scope;
-parallel fibers remain isolated, nested dispatch reuses the same resolver, and
-the execution failure reaches Thesis disposers before teardown completes.
-
-The optional `MessageBusModule` provides the standard Thesis DIC composition.
-Pass the compiled registry and the application-owned service refs keyed by the
-IDs stored in the registry, then import the module from the application root:
-
-```php
-use Fedor\MessageBus\Integration\Thesis\MessageBusModule;
-
-$handler = $dic->object(FindAddressHandler::class)->canBeScoped();
-return $dic->import(new MessageBusModule(
-    registry: $dic->value($compiledRegistry),
-    services: [FindAddressHandler::class => $handler],
-));
+```shell
+composer config repositories.message-bus-async vcs \
+  https://github.com/wolfcharaa/message-bus-async.git
+composer require romanfedorskij/message-bus-async:^0.1
 ```
 
-Install `thesis/dic` in the application to use this integration. It remains a
-Composer suggestion rather than a required runtime dependency. Applications
-that own a decorated or otherwise custom scope can pass `scopeFactory` instead
-of `services`; the registry, handlers, codecs, transports, and other integration
-adapters remain application-owned.
+For the recommended Thesis integration:
 
-Event publication reports every matched binding as a local or queued
-`PublishedExecution`. A partial failure throws `PublishFailed`; the exception
-retains the partial `PublishResult`, including successful executions and
-structured failures. Callers therefore cannot silently ignore a failed fan-out
-branch, while queue message IDs remain available for status polling.
+```shell
+composer require thesis/dic:^0.5
+```
 
-## Responsibility Boundary
+## First Query
 
-The core package will own:
+Declare a typed message, bind a handler with an attribute, compile the explicit
+class list, and import `MessageBusModule` into the application composition root:
 
-- typed query, command, and event dispatch contracts;
-- nested execution context and middleware pipeline;
-- deterministic registry and stable message aliases;
-- versioned JSON codecs and upcasters;
-- durable publish, status, cancellation, retry, and queue schema contracts;
-- the AMPHP PostgreSQL producer/status/cancel gateway.
-- the neutral scoped exact-binding execution contract used by the worker
-  extension.
+```php
+/** @implements Query<string> */
+final readonly class Greeting implements Query
+{
+    public function __construct(public string $name) {}
+}
 
-Envelope deserialization adapters, queue consumption, heartbeat, stale
-recovery, process control, and worker CLI belong to the optional
-`romanfedorskij/message-bus-async-worker` package.
+#[QueryHandler(Greeting::class, contextAware: false)]
+final class GreetingHandler
+{
+    public function __invoke(Greeting $query): string
+    {
+        return "Hello, {$query->name}!";
+    }
+}
+```
 
-The core will not require a DI container or Symfony Console. Container-specific
-resolution and lifecycle behavior will be connected through adapters.
+The complete executable composition, including imports and scoped Thesis DIC
+wiring, is in [Getting started](docs/guides/getting-started.md).
 
-## Platform
+## Execution Model
 
-- PHP `8.4.12` or newer within the PHP 8 major line;
-- JSON extension;
-- `amphp/amp` `3.1.x` or a compatible 3.x release;
-- `amphp/postgres` `2.2.1` or a compatible 2.x release, with `ext-pgsql` or
-  `ext-pq` available in the process using the PostgreSQL gateway;
-- `psr/clock` `1.0.x` for deterministic delayed delivery;
-- `symfony/var-exporter` `7.4.x` or a compatible 7.x release.
+1. The application compiles an explicit list of handler classes.
+2. Every root `ask()`, `dispatch()`, or `publish()` opens one service scope.
+3. Nested calls reuse that scope while receiving new message IDs and preserved
+   correlation/causation metadata.
+4. Local bindings execute through their flow pipeline. Durable bindings are
+   serialized and passed to the selected queue provider.
+5. The scope is disposed in `finally`, including handler or interceptor
+   failures.
 
-Additional runtime dependencies will be declared only with the implementation
-slice that uses them.
+The queue contract is at-least-once. Handlers with state-changing effects must
+be idempotent or use an explicit idempotency policy. The core does not promise
+exactly-once delivery or an implicit transactional outbox.
 
-## Development State
+## Documentation
 
-The repository currently contains public interaction contracts, compile-time
-attributes, deterministic registry compilation, neutral scoped resolution, the
-versioned compiled-registry artifact, custom flow contexts, local sequential and
-queue-producer strategies, explicit versioned JSON codecs/upcasters, and the
-composite bus runtime with nested causation and aggregate fan-out. Optional
-PSR-11 and Thesis DIC adapters preserve typed resolution and per-root scope
-isolation. The shared PostgreSQL schema and AMP producer/status/cancel gateway
-are implemented and covered by an opt-in real PostgreSQL integration suite.
-Worker consumption transitions and deterministic enqueue idempotency remain the
-next implementation slices.
+- [Getting started](docs/guides/getting-started.md) — first local query with
+  Thesis DIC.
+- [Runtime contract](docs/reference/runtime.md) — messages, registry, scopes,
+  errors, identity, cancellation, and durable execution.
+- [PostgreSQL queue](docs/reference/postgres-queue.md) — schema ownership,
+  at-least-once delivery, producer operations, and state transitions.
+- [Idempotency and replay](docs/reference/idempotency.md) — policy, interceptor,
+  transaction, and replay semantics.
+- [Worker package](https://github.com/wolfcharaa/message-bus-async-worker) —
+  consumers, runner, control plane, and CLI.
 
-Run the package quality gates with:
+## Version Compatibility
 
-```bash
+`message-bus-async-worker ^0.1` is compatible with core `^0.1`. Durable message
+aliases, codec versions, binding IDs, queue schema, and compiled registry
+artifacts are compatibility-sensitive. Review those contracts before changing
+them in a patch release.
+
+The old `romanfedorskij/message-bus` package is only a behavioral reference.
+Its runtime container integration, reflection serializer, and worker APIs must
+not be mixed with this package family.
+
+## Development
+
+```shell
 composer validate --strict
 composer analyse
 composer test
 ```
 
-`composer analyse` runs the package-owned PHPStan dependency at level max over
-`src`, `tests`, and `integration-tests`; it does not rely on a globally
-installed binary. The PostgreSQL integration gate expects a disposable database:
+The optional PostgreSQL integration suite requires a disposable database whose
+user can create and drop tables:
 
-```bash
+```shell
 MESSAGE_BUS_TEST_POSTGRES_CONFIG='host=127.0.0.1 port=5432 user=test password=test db=test' \
-    composer test:integration
+  composer test:integration
 ```
+
+## License
+
+[MIT](LICENSE)

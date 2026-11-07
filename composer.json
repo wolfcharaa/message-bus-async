@@ -1,6 +1,14 @@
 {
     "name": "romanfedorskij/message-bus-async",
     "description": "Async-first PHP message bus with typed local dispatch and durable producer contracts",
+    "keywords": [
+        "amphp",
+        "command-bus",
+        "event-bus",
+        "message-bus",
+        "queue"
+    ],
+    "homepage": "https://github.com/wolfcharaa/message-bus-async",
     "license": "MIT",
     "type": "library",
     "require": {
@@ -27,6 +35,10 @@
             "email": "markaryanroma@mail.ru"
         }
     ],
+    "support": {
+        "issues": "https://github.com/wolfcharaa/message-bus-async/issues",
+        "source": "https://github.com/wolfcharaa/message-bus-async"
+    },
     "config": {
         "sort-packages": true
     },
