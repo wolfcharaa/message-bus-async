@@ -1,21 +1,21 @@
-# Changelog
+# История Изменений
 
-All notable changes to this project are documented in this file.
+Здесь фиксируются значимые изменения проекта.
 
 ## [0.1.0] - 2026-11-07
 
-First public release.
+Первый публичный release.
 
-- Added typed query, command, and event bus contracts.
-- Added explicit registry compilation, diagnostics, and trusted compiled
+- Добавлены типизированные contracts query, command и event bus.
+- Добавлены явная compilation registry, diagnostics и доверенные compiled
   registry artifacts.
-- Added nested correlation, cancellation, interceptor pipelines, and scoped
+- Добавлены nested correlation, cancellation, interceptor pipelines и scoped
   service resolution.
-- Added versioned JSON codecs and deterministic upcaster chains.
-- Added idempotency policy and flow-validation contracts.
-- Added AMPHP PostgreSQL producer, batch enqueue, status, and cancellation
-  gateway with an at-least-once queue schema.
-- Added optional PSR-11 and Thesis DIC integrations.
-- Added the exact-binding execution boundary used by the worker package.
+- Добавлены версионированные JSON codecs и детерминированные upcaster chains.
+- Добавлены idempotency policy и flow-validation contracts.
+- Добавлены AMPHP PostgreSQL producer, batch enqueue, status и cancellation
+  gateway со schema at-least-once queue.
+- Добавлены optional integrations PSR-11 и Thesis DIC.
+- Добавлена граница exact-binding execution для worker package.
 
 [0.1.0]: https://github.com/wolfcharaa/message-bus-async/releases/tag/v0.1.0

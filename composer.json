@@ -1,6 +1,6 @@
 {
     "name": "romanfedorskij/message-bus-async",
-    "description": "Async-first PHP message bus with typed local dispatch and durable producer contracts",
+    "description": "Async-first PHP message bus with typed dispatch, scoped execution, and PostgreSQL producer contracts",
     "keywords": [
         "amphp",
         "command-bus",

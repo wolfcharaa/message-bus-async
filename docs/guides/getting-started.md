@@ -1,10 +1,10 @@
-# Getting Started
+# Первый Запрос
 
-This guide builds the smallest complete local query flow with Thesis DIC. The
-handler is scoped to one root bus execution and is never resolved through a
-service locator inside application code.
+Это руководство собирает минимальный рабочий query-flow с Thesis DIC.
+Обработчик живёт в scope одного корневого вызова и не извлекается из контейнера
+прикладным кодом.
 
-## 1. Install
+## 1. Установить Пакет
 
 ```shell
 composer config repositories.message-bus-async vcs \
@@ -12,7 +12,9 @@ composer config repositories.message-bus-async vcs \
 composer require romanfedorskij/message-bus-async:^0.1 thesis/dic:^0.5
 ```
 
-## 2. Create `example.php`
+VCS repository нужен до регистрации пакета в Packagist.
+
+## 2. Создать `example.php`
 
 ```php
 <?php
@@ -42,7 +44,7 @@ final class GreetingHandler
 {
     public function __invoke(Greeting $query): string
     {
-        return "Hello, {$query->name}!";
+        return "Привет, {$query->name}!";
     }
 }
 
@@ -67,34 +69,34 @@ final class ApplicationModule implements Module
 
 $result = Dic::run(
     new ApplicationModule(),
-    static fn (MessageBus $bus): string => $bus->ask(new Greeting('Ada')),
+    static fn (MessageBus $bus): string => $bus->ask(new Greeting('Ада')),
 );
 
 echo $result, PHP_EOL;
 ```
 
-## 3. Run
+## 3. Запустить
 
 ```shell
 php example.php
 ```
 
-Expected output:
+Ожидаемый вывод:
 
 ```text
-Hello, Ada!
+Привет, Ада!
 ```
 
-The registry is compiled before dispatch. The root `ask()` opens a Thesis
-scope, resolves `GreetingHandler` in that scope, and disposes the scope after
-the result or exception.
+Registry компилируется до dispatch. Корневой `ask()` открывает Thesis scope,
+разрешает в нём `GreetingHandler` и закрывает scope после результата или
+исключения.
 
-## Next Steps
+## Что Делать Дальше
 
-- Add commands and events using the same explicit class-list model.
-- Read the [runtime contract](../reference/runtime.md) before adding nested
-  calls, interceptors, custom flows, or compiled registry artifacts.
-- Read the [PostgreSQL queue reference](../reference/postgres-queue.md) before
-  enabling durable bindings.
-- Add the [worker package](https://github.com/wolfcharaa/message-bus-async-worker)
-  only when the application needs queue consumption and process control.
+- Добавляйте commands и events в тот же явный список классов.
+- Перед вложенными вызовами, interceptors, custom flows или сохранением
+  compiled registry прочитайте [runtime contract](../reference/runtime.md).
+- Перед durable bindings прочитайте
+  [контракт очереди PostgreSQL](../reference/postgres-queue.md).
+- Подключайте [worker package](https://github.com/wolfcharaa/message-bus-async-worker),
+  только если приложению нужны consumption и process control.

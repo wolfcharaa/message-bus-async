@@ -1,40 +1,35 @@
-# Idempotency and replay
+# Идемпотентность И Повторное Выполнение
 
-The package preserves the handler-idempotency model from
-`romanfedorskij/message-bus` v6. It is an interceptor and policy contract, not a
-second middleware system and not an implicit `ON CONFLICT` rule for queue
-enqueue.
+Пакет сохраняет модель handler idempotency из
+`romanfedorskij/message-bus` v6. Это interceptor и policy contract, а не
+вторая middleware system и не неявный `ON CONFLICT` для enqueue.
 
-## Runtime decisions
+## Решения Runtime
 
-`RequiresIdempotencyKey` resolves the current binding from the execution
-envelope and builds an `IdempotencyExecution` containing stable binding, flow,
-message identity, correlation, causation, alias, and original creation time. A
-resolved policy supplies four ports:
+`RequiresIdempotencyKey` определяет текущий binding из execution envelope и
+создаёт `IdempotencyExecution` со стабильными binding, flow, message identity,
+correlation, causation, alias и исходным временем создания. Policy предоставляет
+четыре порта:
 
-- `IdempotencyKeyExtractorInterface` returns a normalized `IdempotencyKey`;
-- `IntentFingerprintFactoryInterface` identifies the semantic message intent;
-- `IdempotencyStoreInterface` atomically claims and completes work;
-- the optional `IdempotencyEffectReferenceFactoryInterface` records the durable
-  effect created by a successful handler.
+- `IdempotencyKeyExtractorInterface` возвращает нормализованный key;
+- `IntentFingerprintFactoryInterface` определяет смысловое намерение message;
+- `IdempotencyStoreInterface` атомарно claims и завершает работу;
+- optional `IdempotencyEffectReferenceFactoryInterface` записывает durable
+  effect успешного handler.
 
-The store returns one decision:
-
-| Decision | Runtime result |
+| Решение store | Результат runtime |
 | --- | --- |
-| `IdempotencyClaimed` | Continue the interceptor pipeline, then call `complete()` |
-| `IdempotencyCompletedSame` | Return a void no-op without invoking the handler |
-| `IdempotencyInProgress` | Throw retryable `IdempotencyInProgressException` |
-| `IdempotencyConflict` | Throw non-retryable `IdempotencyConflictDetected` |
+| `IdempotencyClaimed` | продолжить pipeline, затем вызвать `complete()` |
+| `IdempotencyCompletedSame` | вернуть void no-op без handler |
+| `IdempotencyInProgress` | выбросить retryable `IdempotencyInProgressException` |
+| `IdempotencyConflict` | выбросить non-retryable `IdempotencyConflictDetected` |
 
-If the handler or an inner interceptor fails, completion is not recorded. The
-interceptor does not open a transaction. When the store and handler effect must
-commit atomically, a transaction interceptor must wrap the idempotency
-interceptor.
+Если handler или внутренний interceptor падает, completion не записывается.
+Interceptor не открывает транзакцию. Если store и эффект handler должны
+зафиксироваться атомарно, transaction interceptor обязан оборачивать
+idempotency interceptor.
 
-## Policy registration
-
-A provider declares policy descriptors with typed service references:
+## Регистрация Policy
 
 ```php
 use Fedor\MessageBus\Idempotency\IdempotencyPolicyDescriptor;
@@ -49,14 +44,14 @@ yield IdempotencyPolicyDescriptor::forBinding(
 );
 ```
 
-`IdempotencyPolicyResolver` resolves those references through the neutral
-`ServiceResolverInterface` and rejects duplicate binding policies. The resolved
-registry retains `RegistryOwner` and `RegistrySource`, so compile-time rules can
-verify policy ownership.
+`IdempotencyPolicyResolver` разрешает references через нейтральный
+`ServiceResolverInterface` и отклоняет duplicate policies одного binding.
+Resolved registry сохраняет `RegistryOwner` и `RegistrySource`, чтобы
+compile-time rules могли проверить ownership.
 
-## Flow contract
+## Flow Contract
 
-The handler needs an explicit binding ID and owner metadata:
+Handler требует явные binding ID и owner metadata:
 
 ```php
 #[CommandHandler(
@@ -75,8 +70,7 @@ final class ImportAddressHandler
 }
 ```
 
-Register the interceptor roles and validate the flow during registry
-compilation:
+Зарегистрируйте роли interceptors и проверяйте flow при compilation:
 
 ```php
 $roles = (new InterceptorRoleRegistry())
@@ -91,7 +85,7 @@ $contracts = new FlowContractRegistry(
 $rule = new FlowContractValidationRule($contracts, $roles, [$policies]);
 ```
 
-The corresponding flow must place the transaction boundary outside the guard:
+Соответствующий flow ставит transaction boundary снаружи guard:
 
 ```php
 FlowDefinition::sync('idempotent')->middleware(
@@ -100,15 +94,14 @@ FlowDefinition::sync('idempotent')->middleware(
 );
 ```
 
-The rule rejects missing roles, reversed ordering, query handlers, generated
-`auto.*` binding IDs, missing binding ownership, absent policies, and owner
-mismatches.
+Rule отклоняет отсутствующие роли, обратный порядок, query handlers,
+сгенерированные `auto.*` binding IDs, отсутствующий ownership/policy и
+несовпадение owners.
 
-## Transport boundary
+## Граница Transport
 
-This contract protects handler effects during at-least-once delivery. It does
-not make producer enqueue idempotent. The core queue gateway therefore does not
-accept a deterministic enqueue key and does not automatically retry an
-ambiguous non-idempotent enqueue. A future transport-level deduplication feature
-must define its own storage key, retention, conflict, and observability contract
-explicitly.
+Контракт защищает эффект handler при at-least-once delivery, но не делает
+producer enqueue идемпотентным. Core gateway не принимает deterministic enqueue
+key и не повторяет автоматически неоднозначный non-idempotent enqueue. Будущий
+transport-level deduplication должен отдельно определить storage key, retention,
+conflict и observability.

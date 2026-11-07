@@ -1,15 +1,16 @@
-# PostgreSQL Queue Reference
+# Очередь PostgreSQL
 
-The core package owns the durable queue schema and the application-facing
-producer, status, and cancellation API. It uses `amphp/postgres` and contains no
-PDO adapter. Worker execution belongs to `romanfedorskij/message-bus-async-worker`.
+Core package владеет schema durable queue и прикладными producer, status и
+cancellation API. Реализация использует `amphp/postgres` и не содержит PDO
+adapter. Выполнение jobs находится в
+`romanfedorskij/message-bus-async-worker`.
 
-## Runtime Requirements
+## Требования Runtime
 
-The process that constructs `PostgresQueueGateway` needs `amphp/postgres` 2.x
-and either `ext-pgsql` or `ext-pq`. The application owns the
-`PostgresConnectionPool`, applies schema changes through its migration system,
-and closes the pool during application shutdown.
+Процесс, создающий `PostgresQueueGateway`, требует `amphp/postgres` 2.x и
+`ext-pgsql` либо `ext-pq`. Приложение владеет
+`PostgresConnectionPool`, применяет schema через свою систему migrations и
+закрывает pool при завершении.
 
 ```php
 <?php
@@ -24,115 +25,107 @@ $config = PostgresConfig::fromString((string) getenv('POSTGRES_CONFIG'));
 $pool = new PostgresConnectionPool($config);
 $queue = new PostgresQueueGateway($pool);
 
-// Register $queue as QueueProviderInterface,
-// QueueStatusRepositoryInterface, and QueueJobControlInterface.
-// The application lifecycle closes $pool.
+// Зарегистрируйте $queue как QueueProviderInterface,
+// QueueStatusRepositoryInterface и QueueJobControlInterface.
+// Application lifecycle должен закрыть $pool.
 ```
 
-`PostgresQueueSchemaGenerator` generates the current DDL. Calling the generator
-does not change the database; the host migration must apply its result before
-the gateway starts. `QueueTableDefinition` changes the unqualified table name
-when the application cannot use the default `message_bus__queue_jobs`.
+`PostgresQueueSchemaGenerator` генерирует актуальный DDL, но не изменяет базу.
+Host migration должна применить результат до старта gateway.
+`QueueTableDefinition` позволяет изменить имя таблицы
+`message_bus__queue_jobs`.
 
-## Delivery Guarantee
+## Гарантия Доставки
 
-The queue contract is at-least-once. Claim persists `running` before handler
-execution, successful handling requires a separate acknowledgement, and a stale
-lease can be returned to retry by the worker package. A process crash may
-therefore execute a message again. State-changing handlers must use an
-idempotency key/policy or have a demonstrably idempotent effect.
+Queue contract — at-least-once. Claim сохраняет `running` до вызова handler,
+успех подтверждается отдельным acknowledgement, а stale lease может вернуться
+в retry. После падения процесса сообщение может выполниться повторно.
+Изменяющий состояние handler должен иметь idempotency key/policy или доказуемо
+идемпотентный эффект.
 
-The `0.1.0` producer does not yet provide deterministic enqueue idempotency. An
-application must not blindly retry an enqueue after an unknown connection
-outcome, because the original insert might have committed. Transactional outbox
-and exactly-once external side effects are intentionally outside `0.1.0`.
+Producer версии `0.1.0` не предоставляет deterministic enqueue idempotency.
+Нельзя вслепую повторять enqueue после неизвестного результата соединения:
+исходный INSERT мог зафиксироваться. Transactional outbox и exactly-once для
+внешних эффектов не входят в `0.1.0`.
 
-## Outbox Extension Seam
+## Точка Расширения Для Outbox
 
-The core does not define an `OutboxInterface`. `QueueExecutionStrategy` depends
-only on `QueueProviderInterface`, and the value passed to that port is the same
-complete `QueueMessage` used by `PostgresQueueGateway`: stable binding/message
-identity, routing, retry snapshot, availability, and serialized envelope.
+Core не объявляет `OutboxInterface`. `QueueExecutionStrategy` зависит только
+от `QueueProviderInterface` и передаёт туда полный `QueueMessage`: стабильную
+identity сообщения и binding, routing, retry snapshot, availability и
+serialized envelope.
 
-An application that later proves a transactional dual-write scenario can
-replace the direct PostgreSQL provider with an adapter that stores this
-`QueueMessage` in its application outbox and returns the outbox record ID as the
-queue message ID. The adapter and its relay own transaction joining, storage
-schema, deduplication, recovery, and delivery observability. No change to
-`MessageBus`, `QueueExecutionStrategy`, or message codecs is required.
+Приложение с доказанной transactional dual-write задачей может заменить прямой
+PostgreSQL provider адаптером, который сохраняет `QueueMessage` в application
+outbox и возвращает ID записи как queue message ID. Адаптер и relay отвечают за
+присоединение транзакции, schema, deduplication, recovery и observability.
+`MessageBus`, `QueueExecutionStrategy` и codecs менять не нужно.
 
-This is deliberately an application adapter seam rather than a dormant core
-abstraction. The core does not accept an application transaction object, rely
-on ambient global transaction state, or claim atomicity that the selected
-adapter cannot prove. A contract fixture verifies that an outbox-style provider
-can replace the direct gateway through the existing port.
+Это прикладной adapter seam, а не неактивная core abstraction. Core не принимает
+application transaction object, не опирается на ambient global transaction и
+не обещает неподтверждённую выбранным адаптером atomicity.
 
-## State Machine
+## Машина Состояний
 
-The schema and `QueueJobState` preserve the v6 state vocabulary.
-
-| Current state | Allowed next state | Operation owner |
+| Текущее | Следующее | Кто меняет |
 | --- | --- | --- |
-| `pending` | `running` | Worker claim |
-| `pending` | `cancelled` | Producer-side cancel API |
-| `running` | `succeeded` | Worker ack |
-| `running` | `pending` | Worker retry or stale recovery |
-| `running` | `failed` | Worker reject or exhausted retry policy |
-| `running` | `cancelled` | Worker observes a cancellation request |
-| `running` | `interrupted` | Worker operational shutdown/control |
+| `pending` | `running` | worker claim |
+| `pending` | `cancelled` | producer cancel API |
+| `running` | `succeeded` | worker ack |
+| `running` | `pending` | retry или stale recovery |
+| `running` | `failed` | reject или исчерпанный retry |
+| `running` | `cancelled` | worker заметил cancellation request |
+| `running` | `interrupted` | operational shutdown/control |
 
-`succeeded`, `failed`, and `cancelled` are terminal. `interrupted` is a public,
-recoverable technical state, but its explicit recovery API remains a worker
-package concern and is not defined by the core gateway.
+`succeeded`, `failed` и `cancelled` терминальны. `interrupted` —
+публичное восстанавливаемое техническое состояние; его recovery API относится
+к worker package.
 
-## Producer And Batch Semantics
+## Producer И Batch Semantics
 
-`enqueue()` inserts one `pending` job and returns its queue ID, creation time,
-status, and table metadata. The record contains:
+`enqueue()` вставляет один `pending` job и возвращает queue ID, время
+создания, status и table metadata. В строке хранятся:
 
-- stable message and binding identities;
-- message/correlation IDs and flow/transport/queue routing;
-- priority and availability time;
-- retry policy key plus immutable retry snapshot;
+- stable message и binding identity;
+- message/correlation IDs и flow/transport/queue routing;
+- priority и availability;
+- retry policy key и неизменяемый retry snapshot;
 - versioned serialized envelope;
-- lease, heartbeat, cancellation, error, and lifecycle columns required by the
-  worker package.
+- lease, heartbeat, cancellation, error и lifecycle поля worker package.
 
-`enqueueMany()` uses one PostgreSQL transaction. It either inserts every message
-in input order or rolls the transaction back. Cancellation is checked before
-opening the transaction, before every write, and before commit.
+`enqueueMany()` использует одну PostgreSQL transaction: либо вставляет все
+сообщения в исходном порядке, либо откатывает всё. Cancellation проверяется до
+транзакции, перед каждой записью и перед commit.
 
-AMPHP PostgreSQL 2.x does not accept an `Amp\Cancellation` argument for an
-already-running SQL operation. The gateway therefore does not abandon an
-in-flight write: doing so would return an ambiguous result while the insert may
-still commit. Cancellation remains cooperative at safe boundaries; once a SQL
-write begins, the method waits for its definite result.
+AMPHP PostgreSQL 2.x не принимает `Amp\Cancellation` для уже выполняющегося
+SQL. Gateway не бросает in-flight write с неоднозначным результатом и ждёт её
+определённого завершения. Cancellation действует на безопасных границах.
 
-## Status And Cancellation
+## Status И Cancellation
 
-`QueueStatusRepositoryInterface` exposes lookup by queue ID and ordered lists by
-message or correlation ID. `QueueJobStatus` contains routing identity, attempts,
-availability, start/finish/create/update timestamps, and the last error summary.
+`QueueStatusRepositoryInterface` ищет job по queue ID и возвращает
+упорядоченные списки по message или correlation ID. `QueueJobStatus` содержит
+routing identity, attempts, availability, timestamps и последнюю ошибку.
 
-`QueueJobControlInterface::cancel()` changes only `pending` jobs to `cancelled`.
-`requestCancellation()` only sets `cancellation_requested` for `running` jobs;
-the worker must observe that flag and persist the final `cancelled` transition.
-Both operations are idempotent no-ops when the queue ID is absent or its state
-does not match the guarded update.
+`QueueJobControlInterface::cancel()` переводит только `pending` в
+`cancelled`. `requestCancellation()` ставит
+`cancellation_requested` только для `running`; worker должен заметить флаг
+и сохранить финальный `cancelled`. Обе операции являются idempotent no-op,
+если ID отсутствует или guarded state не совпал.
 
-Heartbeat, lease renewal, claim, ack, retry, reject, stale recovery, and worker
-process control are intentionally absent from this interface.
+Heartbeat, lease renewal, claim, ack, retry, reject, stale recovery и process
+control не входят в этот interface.
 
-## Verification
+## Проверка
 
-Fast tests use typed PostgreSQL doubles and validate SQL parameters, transaction
-rollback, state guards, schema columns, indexes, and every state pair. The real
-database suite creates and drops a process-specific table:
+Fast tests проверяют SQL parameters, rollback, state guards, schema columns,
+indexes и все пары состояний. Real database suite создаёт и удаляет отдельную
+таблицу процесса:
 
-```bash
+```shell
 MESSAGE_BUS_TEST_POSTGRES_CONFIG='host=127.0.0.1 port=5432 user=test password=test db=test' \
-    composer test:integration
+  composer test:integration
 ```
 
-The configured database must be disposable and the user must be allowed to
-create and drop tables.
+База должна быть disposable, а пользователь — иметь право создавать и удалять
+таблицы.
