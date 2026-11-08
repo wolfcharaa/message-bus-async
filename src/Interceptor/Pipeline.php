@@ -23,9 +23,7 @@ final class Pipeline implements PipelineInterface
     /** @var Closure(): TResult */
     private readonly Closure $handler;
 
-    private int $position = 0;
-
-    private bool $completed = false;
+    private bool $consumed = false;
 
     /**
      * @param array<array-key, mixed> $interceptors
@@ -43,20 +41,28 @@ final class Pipeline implements PipelineInterface
     #[\Override]
     public function continue(): mixed
     {
-        if ($this->completed) {
-            throw new LogicException('The interceptor pipeline has already completed.');
+        if ($this->consumed) {
+            throw new LogicException('The interceptor pipeline continuation has already been used.');
         }
 
-        $interceptor = $this->interceptors[$this->position] ?? null;
-        ++$this->position;
+        $this->consumed = true;
 
-        if ($interceptor !== null) {
-            return $interceptor($this->context, $this);
+        return $this->continueAt(0);
+    }
+
+    /** @return TResult */
+    private function continueAt(int $position): mixed
+    {
+        $interceptor = $this->interceptors[$position] ?? null;
+
+        if ($interceptor === null) {
+            return ($this->handler)();
         }
 
-        $this->completed = true;
-
-        return ($this->handler)();
+        return $interceptor(
+            $this->context,
+            new PipelineContinuation(fn (): mixed => $this->continueAt($position + 1)),
+        );
     }
 
     /**
@@ -83,5 +89,36 @@ final class Pipeline implements PipelineInterface
         }
 
         return $validated;
+    }
+}
+
+/**
+ * @template TResult
+ * @implements PipelineInterface<TResult>
+ */
+final class PipelineContinuation implements PipelineInterface
+{
+    /** @var Closure(): TResult */
+    private readonly Closure $next;
+
+    private bool $consumed = false;
+
+    /** @param callable(): TResult $next */
+    public function __construct(callable $next)
+    {
+        $this->next = Closure::fromCallable($next);
+    }
+
+    /** @return TResult */
+    #[\Override]
+    public function continue(): mixed
+    {
+        if ($this->consumed) {
+            throw new LogicException('The interceptor pipeline continuation has already been used.');
+        }
+
+        $this->consumed = true;
+
+        return ($this->next)();
     }
 }

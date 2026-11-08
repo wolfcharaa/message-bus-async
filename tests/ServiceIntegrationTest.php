@@ -10,6 +10,8 @@ use Fedor\MessageBus\Integration\Thesis\ThesisServiceResolver;
 use Fedor\MessageBus\Integration\Thesis\ThesisServiceScopeFactory;
 use Fedor\MessageBus\Service\ServiceReference;
 use Fedor\MessageBus\Service\ServiceResolutionFailed;
+use Fedor\MessageBus\Service\ServiceScopeFailure;
+use Fedor\MessageBus\Service\ServiceScopeFactoryInterface;
 use Fedor\MessageBus\Service\ServiceScopeInterface;
 use Fedor\MessageBus\Service\ServiceScopeRunner;
 use PHPUnit\Framework\TestCase;
@@ -97,6 +99,67 @@ final class ServiceIntegrationTest extends TestCase
                 self::assertSame([null, null, $failure], $trace->disposedErrors);
             },
         );
+    }
+
+    public function testScopeCleanupFailurePreservesThePrimaryFailure(): void
+    {
+        $primary = new RuntimeException('execution failed');
+        $cleanup = new RuntimeException('cleanup failed');
+        $runner = new ServiceScopeRunner(new FailingCleanupScopeFactory($cleanup));
+
+        try {
+            $runner->run(static function () use ($primary): never {
+                throw $primary;
+            });
+        } catch (ServiceScopeFailure $error) {
+            self::assertSame($primary, $error->primaryFailure());
+            self::assertSame([$cleanup], $error->cleanupFailures());
+            self::assertSame($primary, $error->getPrevious());
+        }
+    }
+
+    public function testScopeCleanupFailureWithoutPrimaryHasATypedEnvelope(): void
+    {
+        $cleanup = new RuntimeException('cleanup failed');
+        $runner = new ServiceScopeRunner(new FailingCleanupScopeFactory($cleanup));
+
+        try {
+            $runner->run(static fn (): string => 'result');
+            self::fail('Expected scope cleanup to fail.');
+        } catch (ServiceScopeFailure $error) {
+            self::assertNull($error->primaryFailure());
+            self::assertSame([$cleanup], $error->cleanupFailures());
+            self::assertSame($cleanup, $error->getPrevious());
+        }
+    }
+}
+
+final readonly class FailingCleanupScopeFactory implements ServiceScopeFactoryInterface
+{
+    public function __construct(private Throwable $cleanupFailure)
+    {
+    }
+
+    public function openScope(): ServiceScopeInterface
+    {
+        return new FailingCleanupScope($this->cleanupFailure);
+    }
+}
+
+final readonly class FailingCleanupScope implements ServiceScopeInterface
+{
+    public function __construct(private Throwable $cleanupFailure)
+    {
+    }
+
+    public function resolve(ServiceReference $reference): object
+    {
+        throw new RuntimeException('The cleanup fixture does not resolve services.');
+    }
+
+    public function dispose(?Throwable $error = null): void
+    {
+        throw $this->cleanupFailure;
     }
 }
 

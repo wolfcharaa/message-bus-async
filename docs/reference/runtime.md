@@ -44,9 +44,14 @@ Definition можно атомарно записать через `CompiledRegi
 ## Scopes И Разрешение Сервисов
 
 Каждая корневая bus operation открывает один `ServiceScopeInterface` через
-`ServiceScopeFactoryInterface`. Scope закрывается в `finally`. Вложенное
+`ServiceScopeFactoryInterface`. Scope закрывается после выполнения независимо
+от результата. Вложенное
 выполнение переиспользует текущий scope, а параллельные корневые fibers получают
 разные scopes.
+
+Если одновременно падают выполнение и cleanup scope, `ServiceScopeFailure`
+сохраняет исходную ошибку как `primaryFailure()` и все наблюдённые ошибки
+очистки как `cleanupFailures()`. Ошибка cleanup не заменяет исходную причину.
 
 Handlers и interceptors задаются типизированными `ServiceReference`.
 `ServiceResolverInterface` является внутренней инфраструктурой bus и не
@@ -85,7 +90,9 @@ nested signals. Второй механизм timeout библиотека не 
 
 Flow задаёт execution strategy и порядок interceptors. Contextless local binding
 без interceptors выполняется напрямую. В остальных случаях bus создаёт context
-и запускает interceptor pipeline.
+и запускает interceptor pipeline. Переданный interceptor continuation можно
+вызвать не более одного раза, в том числе если следующий interceptor завершил
+цепочку досрочно.
 
 Event publication агрегирует успешные local и queued branches. Если одна ветка
 падает, `PublishFailed` сохраняет частичный `PublishResult` и

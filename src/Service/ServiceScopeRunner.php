@@ -20,16 +20,25 @@ final readonly class ServiceScopeRunner
     public function run(callable $execution): mixed
     {
         $scope = $this->scopeFactory->openScope();
-        $error = null;
 
         try {
-            return $execution($scope);
-        } catch (Throwable $caught) {
-            $error = $caught;
+            $result = $execution($scope);
+        } catch (Throwable $primaryFailure) {
+            try {
+                $scope->dispose($primaryFailure);
+            } catch (Throwable $cleanupFailure) {
+                throw new ServiceScopeFailure($primaryFailure, $cleanupFailure);
+            }
 
-            throw $caught;
-        } finally {
-            $scope->dispose($error);
+            throw $primaryFailure;
         }
+
+        try {
+            $scope->dispose();
+        } catch (Throwable $cleanupFailure) {
+            throw new ServiceScopeFailure(null, $cleanupFailure);
+        }
+
+        return $result;
     }
 }

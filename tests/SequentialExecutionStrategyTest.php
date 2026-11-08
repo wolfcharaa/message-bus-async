@@ -14,6 +14,7 @@ use Fedor\MessageBus\Execution\ExecutionEnvironment;
 use Fedor\MessageBus\Execution\SequentialExecutionStrategy;
 use Fedor\MessageBus\Flow\FlowDefinition;
 use Fedor\MessageBus\Interceptor\InterceptorInterface;
+use Fedor\MessageBus\Interceptor\Pipeline;
 use Fedor\MessageBus\Interceptor\PipelineInterface;
 use Fedor\MessageBus\Invoker\ReflectionCallableInvoker;
 use Fedor\MessageBus\Message\Command;
@@ -119,6 +120,35 @@ final class SequentialExecutionStrategyTest extends TestCase
         (new SequentialExecutionStrategy())->execute($request)->get('missing');
     }
 
+    public function testInterceptorContinuationCannotBeReusedAfterDownstreamShortCircuit(): void
+    {
+        $handlerCalls = 0;
+        $pipeline = new Pipeline(
+            new StrategyContext(self::envelope()),
+            [
+                new StrategyDoubleContinueInterceptor(),
+                new StrategyShortCircuitInterceptor(),
+            ],
+            static function () use (&$handlerCalls): string {
+                ++$handlerCalls;
+
+                return 'handler';
+            },
+        );
+
+        try {
+            $pipeline->continue();
+            self::fail('Expected a reused interceptor continuation to fail.');
+        } catch (LogicException $error) {
+            self::assertSame(
+                'The interceptor pipeline continuation has already been used.',
+                $error->getMessage(),
+            );
+        }
+
+        self::assertSame(0, $handlerCalls);
+    }
+
     /**
      * @param class-string $handler
      * @param list<ServiceReference<InterceptorInterface>> $interceptors
@@ -212,6 +242,33 @@ final class StrategyBindingInterceptor implements InterceptorInterface
 
         return $result;
     }
+}
+
+final class StrategyDoubleContinueInterceptor implements InterceptorInterface
+{
+    #[\Override]
+    public function __invoke(MessageContextInterface $context, PipelineInterface $pipeline): mixed
+    {
+        try {
+            $pipeline->continue();
+        } catch (StrategyShortCircuit) {
+        }
+
+        return $pipeline->continue();
+    }
+}
+
+final class StrategyShortCircuitInterceptor implements InterceptorInterface
+{
+    #[\Override]
+    public function __invoke(MessageContextInterface $context, PipelineInterface $pipeline): never
+    {
+        throw new StrategyShortCircuit();
+    }
+}
+
+final class StrategyShortCircuit extends LogicException
+{
 }
 
 final readonly class StrategyContext implements MessageContextInterface
